@@ -1,4 +1,4 @@
-"""Tkinter GUI for Windows Japanese transcription app."""
+"""Tkinter GUI for Windows Japanese real-time transcription."""
 
 from __future__ import annotations
 
@@ -21,8 +21,8 @@ class TranscriberGUI:
         self.on_stop = on_stop
 
         self.root = tk.Tk()
-        self.root.title("Windows 系统音频日语实时转写")
-        self.root.geometry("920x620")
+        self.root.title("Windows 系统音频日语实时转写（高精度）")
+        self.root.geometry("980x700")
 
         self._build_widgets()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -54,12 +54,18 @@ class TranscriberGUI:
         self.status_var = tk.StringVar(value="状态：未启动")
         ttk.Label(ctrl, textvariable=self.status_var).pack(side=tk.LEFT, padx=20)
 
-        out = ttk.Frame(self.root, padding=10)
-        out.pack(fill=tk.BOTH, expand=True)
+        panes = ttk.Panedwindow(self.root, orient=tk.VERTICAL)
+        panes.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        ttk.Label(out, text="实时段落输出:").pack(anchor=tk.W)
-        self.output_text = ScrolledText(out, wrap=tk.WORD, font=("Consolas", 11))
-        self.output_text.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
+        realtime_frame = ttk.Labelframe(panes, text="实时预览（快速识别）")
+        self.realtime_text = ScrolledText(realtime_frame, wrap=tk.WORD, font=("Consolas", 11), height=12)
+        self.realtime_text.pack(fill=tk.BOTH, expand=True)
+        panes.add(realtime_frame, weight=1)
+
+        final_frame = ttk.Labelframe(panes, text="最终段落（高精度写入）")
+        self.final_text = ScrolledText(final_frame, wrap=tk.WORD, font=("Consolas", 11), height=16)
+        self.final_text.pack(fill=tk.BOTH, expand=True)
+        panes.add(final_frame, weight=1)
 
     def _default_save_path(self) -> str:
         return str(Path.cwd() / TranscriptFileWriter.default_filename())
@@ -93,9 +99,13 @@ class TranscriberGUI:
     def set_status(self, message: str) -> None:
         self.status_var.set(message)
 
-    def append_paragraph(self, timestamp: str, text: str) -> None:
-        self.output_text.insert(tk.END, f"{timestamp}\n{text}\n\n")
-        self.output_text.see(tk.END)
+    def append_preview(self, timestamp: str, text: str) -> None:
+        self.realtime_text.insert(tk.END, f"{timestamp}\n{text}\n\n")
+        self.realtime_text.see(tk.END)
+
+    def append_final(self, timestamp: str, text: str) -> None:
+        self.final_text.insert(tk.END, f"{timestamp}\n{text}\n\n")
+        self.final_text.see(tk.END)
 
     def set_running_ui(self, running: bool) -> None:
         self.start_btn.config(state=tk.DISABLED if running else tk.NORMAL)

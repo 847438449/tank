@@ -9,7 +9,7 @@ from typing import Optional
 from audio_capture import WasapiLoopbackCapture
 from file_writer import TranscriptFileWriter
 from gui import TranscriberGUI
-from transcriber import TranscriptSegment, TranscriberConfig, TranscriptionWorker
+from transcriber import RecognitionEvent, TranscriberConfig, TranscriptionWorker
 
 
 def setup_logging() -> None:
@@ -23,19 +23,23 @@ class AppController:
     def __init__(self) -> None:
         self.logger = logging.getLogger(self.__class__.__name__)
 
-        self.audio_queue: Queue = Queue(maxsize=100)
-        self.segment_queue: Queue = Queue()
+        self.audio_queue: Queue = Queue(maxsize=120)
+        self.event_queue: Queue = Queue()
         self.error_queue: Queue = Queue()
 
         self.transcriber_config = TranscriberConfig(
-            model_size="medium",  # 可切换 small / medium / large-v3
+            model_size="medium",  # switchable: small / medium / large-v3
             language="ja",
-            beam_size=5,
+            beam_size=8,
+            best_of=5,
+            temperature=0.0,
             condition_on_previous_text=True,
             vad_filter=True,
-            silence_end_sec=1.0,
-            max_segment_sec=14.0,
-            min_segment_sec=0.8,
+            silence_end_sec=0.8,
+            min_segment_sec=2.5,
+            max_segment_sec=11.0,
+            window_sec=7.0,
+            overlap_sec=1.0,
             prefer_cuda=True,
         )
 
@@ -58,14 +62,14 @@ class AppController:
                 output_queue=self.audio_queue,
                 error_queue=self.error_queue,
                 sample_rate=16000,
-                frame_seconds=0.5,
+                frame_seconds=0.4,
                 channels=2,
                 silence_rms_threshold=0.008,
                 logger=logging.getLogger("audio_capture"),
             )
             self.transcriber = TranscriptionWorker(
                 input_queue=self.audio_queue,
-                output_queue=self.segment_queue,
+                output_queue=self.event_queue,
                 error_queue=self.error_queue,
                 config=self.transcriber_config,
                 logger=logging.getLogger("transcriber"),
@@ -96,8 +100,8 @@ class AppController:
             if self.transcriber:
                 self.transcriber.stop()
 
-            # Drain remaining transcribed segments before closing files.
-            self._drain_segment_queue()
+            # Drain final events before closing files.
+            self._drain_event_queue()
         finally:
             self.capture = None
             self.transcriber = None
@@ -111,17 +115,20 @@ class AppController:
         if not self._running:
             return
 
-        self._drain_segment_queue()
+        self._drain_event_queue()
         self._drain_error_queue()
 
-        self.gui.root.after(200, self._poll_queues)
+        self.gui.root.after(150, self._poll_queues)
 
-    def _drain_segment_queue(self) -> None:
+    def _drain_event_queue(self) -> None:
         try:
             while True:
-                segment: TranscriptSegment = self.segment_queue.get_nowait()
-                self.writer.write_segment(segment)
-                self.gui.append_paragraph(segment.timestamp, segment.text)
+                event: RecognitionEvent = self.event_queue.get_nowait()
+                if event.kind == "preview":
+                    self.gui.append_preview(event.segment.timestamp, event.segment.text)
+                elif event.kind == "final":
+                    self.writer.write_segment(event.segment)
+                    self.gui.append_final(event.segment.timestamp, event.segment.text)
         except Empty:
             pass
 

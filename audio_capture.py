@@ -1,4 +1,4 @@
-"""Windows WASAPI loopback audio capture with short frames and simple VAD flags."""
+"""Windows WASAPI loopback audio capture with short frames and speech activity flags."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import soundcard as sc
 
 @dataclass
 class AudioFrame:
-    """A short audio frame and its basic speech activity flag."""
+    """A short audio frame and its lightweight VAD decision."""
 
     audio: np.ndarray
     is_speech: bool
@@ -28,14 +28,14 @@ class AudioCaptureError(RuntimeError):
 
 
 class WasapiLoopbackCapture:
-    """Capture system output audio from default speaker using WASAPI loopback."""
+    """Capture system playback audio from default speaker via WASAPI loopback."""
 
     def __init__(
         self,
         output_queue: Queue,
         error_queue: Optional[Queue] = None,
         sample_rate: int = 16000,
-        frame_seconds: float = 0.5,
+        frame_seconds: float = 0.4,
         channels: int = 2,
         silence_rms_threshold: float = 0.008,
         logger: Optional[logging.Logger] = None,
@@ -102,6 +102,7 @@ class WasapiLoopbackCapture:
 
                     rms = float(np.sqrt(np.mean(np.square(chunk)) + 1e-12))
                     is_speech = rms >= self.silence_rms_threshold
+
                     frame = AudioFrame(
                         audio=chunk,
                         is_speech=is_speech,
@@ -115,6 +116,6 @@ class WasapiLoopbackCapture:
             if self.error_queue is not None:
                 self.error_queue.put(f"音频采集异常: {exc}")
         finally:
-            # Sentinel to notify transcriber that capture loop has ended.
+            # Sentinel to notify transcriber capture has ended.
             self.output_queue.put(None)
             self.logger.info("WASAPI loopback capture exited.")

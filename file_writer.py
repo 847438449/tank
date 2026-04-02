@@ -1,4 +1,4 @@
-"""TXT (primary) and optional SRT writer for transcript paragraphs."""
+"""TXT (primary) and optional SRT writer for finalized transcript paragraphs."""
 
 from __future__ import annotations
 
@@ -41,6 +41,7 @@ class TranscriptFileWriter:
         if self._txt_file is None:
             raise RuntimeError("TXT transcript file is not opened.")
 
+        # Final output format (paragraph + blank line)
         self._txt_file.write(f"{segment.timestamp}\n{segment.text}\n\n")
         self._txt_file.flush()
 
