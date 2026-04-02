@@ -1,4 +1,4 @@
-"""Entry point for Windows system-audio Japanese transcription tool."""
+"""Application entrypoint for Windows system-audio Japanese real-time transcription."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Optional
 from audio_capture import WasapiLoopbackCapture
 from file_writer import TranscriptFileWriter
 from gui import TranscriberGUI
-from transcriber import TranscriberConfig, TranscriptionWorker
+from transcriber import TranscriptSegment, TranscriberConfig, TranscriptionWorker
 
 
 def setup_logging() -> None:
@@ -22,11 +22,22 @@ def setup_logging() -> None:
 class AppController:
     def __init__(self) -> None:
         self.logger = logging.getLogger(self.__class__.__name__)
-        self.audio_queue: Queue = Queue(maxsize=8)
-        self.text_queue: Queue = Queue()
 
-        # 预留模型大小切换项，默认更稳的 small 模型
-        self.transcriber_config = TranscriberConfig(model_size="small", device="cpu", compute_type="int8")
+        self.audio_queue: Queue = Queue(maxsize=100)
+        self.segment_queue: Queue = Queue()
+        self.error_queue: Queue = Queue()
+
+        self.transcriber_config = TranscriberConfig(
+            model_size="medium",  # 可切换 small / medium / large-v3
+            language="ja",
+            beam_size=5,
+            condition_on_previous_text=True,
+            vad_filter=True,
+            silence_end_sec=1.0,
+            max_segment_sec=14.0,
+            min_segment_sec=0.8,
+            prefer_cuda=True,
+        )
 
         self.capture: Optional[WasapiLoopbackCapture] = None
         self.transcriber: Optional[TranscriptionWorker] = None
@@ -35,23 +46,27 @@ class AppController:
         self.gui = TranscriberGUI(on_start=self.start, on_stop=self.stop)
         self._running = False
 
-    def start(self, save_path: str) -> None:
+    def start(self, save_path: str, export_srt: bool) -> bool:
         if self._running:
             self.logger.warning("App already running.")
-            return
+            return True
 
         try:
-            self.writer.open(save_path)
+            self.writer.open(save_path, export_srt=export_srt)
+
             self.capture = WasapiLoopbackCapture(
                 output_queue=self.audio_queue,
+                error_queue=self.error_queue,
                 sample_rate=16000,
-                chunk_seconds=5,
+                frame_seconds=0.5,
                 channels=2,
+                silence_rms_threshold=0.008,
                 logger=logging.getLogger("audio_capture"),
             )
             self.transcriber = TranscriptionWorker(
                 input_queue=self.audio_queue,
-                output_queue=self.text_queue,
+                output_queue=self.segment_queue,
+                error_queue=self.error_queue,
                 config=self.transcriber_config,
                 logger=logging.getLogger("transcriber"),
             )
@@ -61,16 +76,17 @@ class AppController:
 
             self._running = True
             self.gui.set_status("状态：运行中（WASAPI loopback）")
-            self.gui.set_running_ui(True)
-            self._poll_text_queue()
+            self._poll_queues()
             self.logger.info("Application started successfully.")
+            return True
         except Exception as exc:
             self.logger.exception("Failed to start application.")
             self.gui.set_status(f"状态：启动失败 - {exc}")
             self.stop()
+            return False
 
     def stop(self) -> None:
-        if not self._running and not self.capture and not self.transcriber:
+        if not self._running and self.capture is None and self.transcriber is None:
             return
 
         self.logger.info("Stopping application...")
@@ -79,6 +95,9 @@ class AppController:
                 self.capture.stop()
             if self.transcriber:
                 self.transcriber.stop()
+
+            # Drain remaining transcribed segments before closing files.
+            self._drain_segment_queue()
         finally:
             self.capture = None
             self.transcriber = None
@@ -88,19 +107,32 @@ class AppController:
             self.gui.set_status("状态：已停止")
             self.logger.info("Application stopped and resources released.")
 
-    def _poll_text_queue(self) -> None:
+    def _poll_queues(self) -> None:
         if not self._running:
             return
 
+        self._drain_segment_queue()
+        self._drain_error_queue()
+
+        self.gui.root.after(200, self._poll_queues)
+
+    def _drain_segment_queue(self) -> None:
         try:
             while True:
-                line = self.text_queue.get_nowait()
-                self.writer.write_line(line)
-                self.gui.append_text(line)
+                segment: TranscriptSegment = self.segment_queue.get_nowait()
+                self.writer.write_segment(segment)
+                self.gui.append_paragraph(segment.timestamp, segment.text)
         except Empty:
             pass
-        finally:
-            self.gui.root.after(200, self._poll_text_queue)
+
+    def _drain_error_queue(self) -> None:
+        try:
+            while True:
+                err = self.error_queue.get_nowait()
+                self.logger.error("Background error: %s", err)
+                self.gui.set_status(f"状态：异常 - {err}")
+        except Empty:
+            pass
 
     def run(self) -> None:
         self.gui.run()

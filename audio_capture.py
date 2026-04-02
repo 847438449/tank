@@ -1,9 +1,11 @@
-"""System audio capture module for Windows WASAPI loopback."""
+"""Windows WASAPI loopback audio capture with short frames and simple VAD flags."""
 
 from __future__ import annotations
 
 import logging
 import threading
+import time
+from dataclasses import dataclass
 from queue import Queue
 from typing import Optional
 
@@ -11,25 +13,39 @@ import numpy as np
 import soundcard as sc
 
 
+@dataclass
+class AudioFrame:
+    """A short audio frame and its basic speech activity flag."""
+
+    audio: np.ndarray
+    is_speech: bool
+    duration_sec: float
+    captured_at: float
+
+
 class AudioCaptureError(RuntimeError):
     """Raised when audio capture initialization fails."""
 
 
 class WasapiLoopbackCapture:
-    """Capture Windows system output audio through WASAPI loopback."""
+    """Capture system output audio from default speaker using WASAPI loopback."""
 
     def __init__(
         self,
         output_queue: Queue,
+        error_queue: Optional[Queue] = None,
         sample_rate: int = 16000,
-        chunk_seconds: int = 5,
-        channels: int = 1,
+        frame_seconds: float = 0.5,
+        channels: int = 2,
+        silence_rms_threshold: float = 0.008,
         logger: Optional[logging.Logger] = None,
     ) -> None:
         self.output_queue = output_queue
+        self.error_queue = error_queue
         self.sample_rate = sample_rate
-        self.chunk_seconds = chunk_seconds
+        self.frame_seconds = frame_seconds
         self.channels = channels
+        self.silence_rms_threshold = silence_rms_threshold
         self.logger = logger or logging.getLogger(__name__)
 
         self._thread: Optional[threading.Thread] = None
@@ -45,7 +61,7 @@ class WasapiLoopbackCapture:
         self._thread.start()
         self.logger.info("Audio capture thread started.")
 
-    def stop(self, timeout: float = 3.0) -> None:
+    def stop(self, timeout: float = 4.0) -> None:
         self._stop_event.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=timeout)
@@ -55,45 +71,50 @@ class WasapiLoopbackCapture:
                 self.logger.info("Audio capture thread stopped.")
 
     def _run(self) -> None:
-        speaker = sc.default_speaker()
-        if speaker is None:
-            raise AudioCaptureError("No default speaker found. Cannot start WASAPI loopback capture.")
-
-        mic = sc.get_microphone(id=str(speaker.name), include_loopback=True)
-        if mic is None:
-            raise AudioCaptureError("Failed to get loopback microphone from default speaker.")
-
-        frames_per_chunk = int(self.sample_rate * self.chunk_seconds)
-
-        self.logger.info(
-            "Starting WASAPI loopback: speaker='%s', sample_rate=%d, chunk_seconds=%d, channels=%d",
-            speaker.name,
-            self.sample_rate,
-            self.chunk_seconds,
-            self.channels,
-        )
+        frames_per_buffer = max(1, int(self.sample_rate * self.frame_seconds))
 
         try:
-            with mic.recorder(
-                samplerate=self.sample_rate,
-                channels=self.channels,
-                blocksize=1024,
-            ) as recorder:
+            speaker = sc.default_speaker()
+            if speaker is None:
+                raise AudioCaptureError("No default speaker found.")
+
+            mic = sc.get_microphone(id=str(speaker.name), include_loopback=True)
+            if mic is None:
+                raise AudioCaptureError("Unable to create WASAPI loopback microphone.")
+
+            self.logger.info(
+                "WASAPI loopback started: speaker='%s', sample_rate=%d, frame=%.2fs, channels=%d",
+                speaker.name,
+                self.sample_rate,
+                self.frame_seconds,
+                self.channels,
+            )
+
+            with mic.recorder(samplerate=self.sample_rate, channels=self.channels, blocksize=1024) as recorder:
                 while not self._stop_event.is_set():
-                    data = recorder.record(numframes=frames_per_chunk)
+                    data = recorder.record(numframes=frames_per_buffer)
                     if data is None or len(data) == 0:
-                        self.logger.debug("Empty audio chunk captured, skip.")
                         continue
 
                     chunk = np.asarray(data, dtype=np.float32)
                     if chunk.ndim > 1:
                         chunk = np.mean(chunk, axis=1)
 
-                    self.output_queue.put(chunk)
-                    self.logger.debug("Captured audio chunk frames=%d", len(chunk))
+                    rms = float(np.sqrt(np.mean(np.square(chunk)) + 1e-12))
+                    is_speech = rms >= self.silence_rms_threshold
+                    frame = AudioFrame(
+                        audio=chunk,
+                        is_speech=is_speech,
+                        duration_sec=len(chunk) / self.sample_rate,
+                        captured_at=time.time(),
+                    )
+                    self.output_queue.put(frame)
 
-        except Exception:
-            self.logger.exception("System audio capture loop exited with error.")
-            raise
+        except Exception as exc:
+            self.logger.exception("Audio capture failed.")
+            if self.error_queue is not None:
+                self.error_queue.put(f"音频采集异常: {exc}")
         finally:
+            # Sentinel to notify transcriber that capture loop has ended.
+            self.output_queue.put(None)
             self.logger.info("WASAPI loopback capture exited.")
