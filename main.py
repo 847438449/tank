@@ -1,4 +1,4 @@
-"""Application entrypoint for Windows system-audio Japanese real-time transcription."""
+"""Entrypoint wiring capture -> segmenter -> transcriber -> GUI/file for high-quality JP subtitles."""
 
 from __future__ import annotations
 
@@ -7,137 +7,137 @@ from queue import Empty, Queue
 from typing import Optional
 
 from audio_capture import WasapiLoopbackCapture
+from config import PRESETS, AppConfig
 from file_writer import TranscriptFileWriter
 from gui import TranscriberGUI
-from transcriber import RecognitionEvent, TranscriberConfig, TranscriptionWorker
+from hotwords import load_hotwords
+from segmenter import SegmenterWorker
+from transcriber import TranscriptionUpdate, TwoStageTranscriber
 
 
 def setup_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s")
 
 
 class AppController:
     def __init__(self) -> None:
-        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger = logging.getLogger("AppController")
 
-        self.audio_queue: Queue = Queue(maxsize=120)
-        self.event_queue: Queue = Queue()
+        self.cfg: AppConfig = PRESETS["背景音乐场景"]
+
+        self.frame_queue: Queue = Queue(maxsize=200)
+        self.segment_queue: Queue = Queue(maxsize=100)
+        self.update_queue: Queue = Queue()
         self.error_queue: Queue = Queue()
 
-        self.transcriber_config = TranscriberConfig(
-            model_size="medium",  # switchable: small / medium / large-v3
-            language="ja",
-            beam_size=8,
-            best_of=5,
-            temperature=0.0,
-            condition_on_previous_text=True,
-            vad_filter=True,
-            silence_end_sec=0.8,
-            min_segment_sec=2.5,
-            max_segment_sec=11.0,
-            window_sec=7.0,
-            overlap_sec=1.0,
-            prefer_cuda=True,
-        )
-
         self.capture: Optional[WasapiLoopbackCapture] = None
-        self.transcriber: Optional[TranscriptionWorker] = None
+        self.segmenter: Optional[SegmenterWorker] = None
+        self.transcriber: Optional[TwoStageTranscriber] = None
+
         self.writer = TranscriptFileWriter(logging.getLogger("writer"))
-
         self.gui = TranscriberGUI(on_start=self.start, on_stop=self.stop)
-        self._running = False
 
-    def start(self, save_path: str, export_srt: bool) -> bool:
+        self._running = False
+        self._final_map: dict[int, TranscriptionUpdate] = {}
+
+    def start(self, txt_path: str, export_srt: bool, hotword_path: str) -> bool:
         if self._running:
-            self.logger.warning("App already running.")
             return True
 
         try:
-            self.writer.open(save_path, export_srt=export_srt)
+            hotwords = load_hotwords(hotword_path)
+            self.writer.open(txt_path, export_srt=export_srt)
 
             self.capture = WasapiLoopbackCapture(
-                output_queue=self.audio_queue,
+                output_queue=self.frame_queue,
                 error_queue=self.error_queue,
-                sample_rate=16000,
-                frame_seconds=0.4,
+                sample_rate=self.cfg.audio.target_sample_rate,
+                frame_seconds=self.cfg.segment.frame_seconds,
                 channels=2,
                 silence_rms_threshold=0.008,
                 logger=logging.getLogger("audio_capture"),
             )
-            self.transcriber = TranscriptionWorker(
-                input_queue=self.audio_queue,
-                output_queue=self.event_queue,
+            self.segmenter = SegmenterWorker(
+                input_queue=self.frame_queue,
+                output_queue=self.segment_queue,
                 error_queue=self.error_queue,
-                config=self.transcriber_config,
+                cfg=self.cfg.segment,
+                sample_rate=self.cfg.audio.target_sample_rate,
+                logger=logging.getLogger("segmenter"),
+            )
+            self.transcriber = TwoStageTranscriber(
+                input_queue=self.segment_queue,
+                output_queue=self.update_queue,
+                error_queue=self.error_queue,
+                cfg=self.cfg,
+                hotwords=hotwords,
                 logger=logging.getLogger("transcriber"),
             )
 
+            self.segmenter.start()
             self.transcriber.start()
             self.capture.start()
 
             self._running = True
-            self.gui.set_status("状态：运行中（WASAPI loopback）")
-            self._poll_queues()
-            self.logger.info("Application started successfully.")
+            self.gui.set_status("状态：运行中（初稿→修正版）")
+            self._poll()
             return True
         except Exception as exc:
-            self.logger.exception("Failed to start application.")
+            self.logger.exception("Start failed")
             self.gui.set_status(f"状态：启动失败 - {exc}")
             self.stop()
             return False
 
     def stop(self) -> None:
-        if not self._running and self.capture is None and self.transcriber is None:
+        if not self._running and not any([self.capture, self.segmenter, self.transcriber]):
             return
 
-        self.logger.info("Stopping application...")
         try:
             if self.capture:
                 self.capture.stop()
+            if self.segmenter:
+                self.segmenter.stop()
             if self.transcriber:
                 self.transcriber.stop()
-
-            # Drain final events before closing files.
-            self._drain_event_queue()
+            self._drain_updates()
         finally:
             self.capture = None
+            self.segmenter = None
             self.transcriber = None
-            self.writer.close()
             self._running = False
             self.gui.set_running_ui(False)
             self.gui.set_status("状态：已停止")
-            self.logger.info("Application stopped and resources released.")
 
-    def _poll_queues(self) -> None:
+    def _poll(self) -> None:
         if not self._running:
             return
 
-        self._drain_event_queue()
-        self._drain_error_queue()
+        self._drain_updates()
+        self._drain_errors()
 
-        self.gui.root.after(150, self._poll_queues)
+        self.gui.root.after(150, self._poll)
 
-    def _drain_event_queue(self) -> None:
+    def _drain_updates(self) -> None:
         try:
             while True:
-                event: RecognitionEvent = self.event_queue.get_nowait()
-                if event.kind == "preview":
-                    self.gui.append_preview(event.segment.timestamp, event.segment.text)
-                elif event.kind == "final":
-                    self.writer.write_segment(event.segment)
-                    self.gui.append_final(event.segment.timestamp, event.segment.text)
+                upd: TranscriptionUpdate = self.update_queue.get_nowait()
+                if upd.is_final:
+                    self._final_map[upd.segment_id] = upd
+                    ordered = [self._final_map[k] for k in sorted(self._final_map.keys())]
+                    final_content = "\n".join(f"{u.timestamp}\n{u.text}\n" for u in ordered)
+                    self.gui.render_final(final_content)
+                    self.writer.rewrite_all(ordered)
+                else:
+                    self.gui.show_draft(f"{upd.timestamp}\n{upd.text}")
         except Empty:
             pass
 
-    def _drain_error_queue(self) -> None:
+    def _drain_errors(self) -> None:
         try:
             while True:
-                err = self.error_queue.get_nowait()
-                self.logger.error("Background error: %s", err)
-                self.gui.set_status(f"状态：异常 - {err}")
+                msg = self.error_queue.get_nowait()
+                self.logger.error(msg)
+                self.gui.set_status(f"状态：异常 - {msg}")
         except Empty:
             pass
 

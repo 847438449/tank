@@ -1,78 +1,46 @@
-"""TXT (primary) and optional SRT writer for finalized transcript paragraphs."""
+"""Writers for clean TXT/SRT subtitle-like outputs with overwrite support."""
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from transcriber import TranscriptSegment
+from transcriber import TranscriptionUpdate
 
 
 class TranscriptFileWriter:
     def __init__(self, logger: Optional[logging.Logger] = None) -> None:
         self.logger = logger or logging.getLogger(__name__)
-        self._txt_file = None
-        self._srt_file = None
         self.txt_path: Optional[Path] = None
         self.srt_path: Optional[Path] = None
-        self._srt_index = 1
 
-    @staticmethod
-    def default_filename() -> str:
-        return f"transcript_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-
-    def open(self, txt_path: str | Path, export_srt: bool = False) -> None:
-        self.close()
-
+    def open(self, txt_path: str, export_srt: bool = False) -> None:
         self.txt_path = Path(txt_path)
         self.txt_path.parent.mkdir(parents=True, exist_ok=True)
-        self._txt_file = self.txt_path.open("a", encoding="utf-8", buffering=1)
-        self.logger.info("Opened txt transcript file: %s", self.txt_path)
-
         if export_srt:
             self.srt_path = self.txt_path.with_suffix(".srt")
-            self._srt_file = self.srt_path.open("a", encoding="utf-8", buffering=1)
-            self._srt_index = 1
-            self.logger.info("Opened optional srt file: %s", self.srt_path)
+        else:
+            self.srt_path = None
 
-    def write_segment(self, segment: TranscriptSegment) -> None:
-        if self._txt_file is None:
-            raise RuntimeError("TXT transcript file is not opened.")
+    def rewrite_all(self, ordered_updates: list[TranscriptionUpdate]) -> None:
+        if self.txt_path is None:
+            return
 
-        # Final output format (paragraph + blank line)
-        self._txt_file.write(f"{segment.timestamp}\n{segment.text}\n\n")
-        self._txt_file.flush()
+        content_lines = []
+        for u in ordered_updates:
+            content_lines.append(f"{u.timestamp}\n{u.text}\n")
+        self.txt_path.write_text("\n".join(content_lines), encoding="utf-8")
 
-        if self._srt_file is not None:
-            start = self._format_srt_time(segment.start_sec)
-            end = self._format_srt_time(segment.end_sec)
-            self._srt_file.write(f"{self._srt_index}\n{start} --> {end}\n{segment.text}\n\n")
-            self._srt_file.flush()
-            self._srt_index += 1
+        if self.srt_path is not None:
+            self._write_srt(ordered_updates)
 
-    def close(self) -> None:
-        if self._txt_file:
-            self._txt_file.flush()
-            self._txt_file.close()
-            self.logger.info("Closed txt transcript file: %s", self.txt_path)
-
-        if self._srt_file:
-            self._srt_file.flush()
-            self._srt_file.close()
-            self.logger.info("Closed srt transcript file: %s", self.srt_path)
-
-        self._txt_file = None
-        self._srt_file = None
-        self.txt_path = None
-        self.srt_path = None
-
-    @staticmethod
-    def _format_srt_time(seconds: float) -> str:
-        total_ms = int(max(0.0, seconds) * 1000)
-        ms = total_ms % 1000
-        sec = (total_ms // 1000) % 60
-        minute = (total_ms // 60000) % 60
-        hour = total_ms // 3600000
-        return f"{hour:02d}:{minute:02d}:{sec:02d},{ms:03d}"
+    def _write_srt(self, updates: list[TranscriptionUpdate]) -> None:
+        lines = []
+        for idx, u in enumerate(updates, start=1):
+            # No exact timestamp intervals available in GUI-overwrite mode; keep simple rolling placeholders.
+            lines.append(str(idx))
+            lines.append(f"00:00:{idx:02d},000 --> 00:00:{idx+1:02d},000")
+            lines.append(u.text)
+            lines.append("")
+        self.srt_path.write_text("\n".join(lines), encoding="utf-8")

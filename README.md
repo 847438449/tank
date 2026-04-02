@@ -1,126 +1,154 @@
-# Windows 系统音频日语实时转写（高精度版）
+# 高精度日语转写系统（Windows / faster-whisper）
 
-基于 Python + faster-whisper 的桌面工具，目标是：在**背景音乐 + 连续长语音**场景下依然保持可用精度与稳定性。
+本项目是“工程强化版”的日语实时转写系统：
 
-## 核心能力
-
-- **WASAPI loopback**：抓系统播放音频（非麦克风）。
-- **混合分段策略**：短帧采集 + 静音切段 + 最大段长强制切段。
-- **滑动窗口重叠识别**：针对长段，降低断句/重复。
-- **两阶段识别**：
-  - 快速识别（GUI 实时预览）
-  - 高精度识别（最终写入 TXT / SRT）
-- **GPU 优先 + 自动回退 CPU**：
-  - 默认先尝试 `cuda + float16`
-  - 初始化或运行时出错自动切 `cpu + int8`
-  - 当前段音频会在 CPU 立即重试，尽量不丢数据
+- 目标不是原始 ASR 流，而是**接近字幕可读文本**
+- 重点场景：**直播 / 培训讲话 / 背景音乐存在**
+- 支持：**初稿实时显示 + 延迟精修覆盖**
 
 ---
 
-## 项目结构
+## 1. 模块结构
 
-- `audio_capture.py`：WASAPI loopback 采集 + 轻量能量 VAD
-- `transcriber.py`：音频预处理、混合分段、滑窗重叠、两阶段识别、后处理、GPU/CPU回退
-- `file_writer.py`：TXT 主输出 + 可选 SRT 导出
-- `gui.py`：Tkinter GUI（实时预览 + 最终段落）
-- `main.py`：应用编排、线程生命周期、异常处理
-- `requirements.txt`
-
----
-
-## 环境要求
-
-- 操作系统：**Windows**（WASAPI loopback）
-- Python：建议 3.10+
-
-### CUDA / GPU 说明
-
-启用 GPU 需满足：
-
-1. Windows + NVIDIA GPU
-2. CUDA 12.x
-3. 与 `faster-whisper / ctranslate2` 匹配的 cuDNN
-
-程序行为：
-
-- 启动先尝试 GPU（`device="cuda"`, `compute_type="float16"`）
-- 若失败自动回退 CPU（`device="cpu"`, `compute_type="int8"`）
-- 若运行中遇到 GPU 相关错误（如 cublas/cudnn/cuda），当前音频会自动改用 CPU 重试
+- `audio_capture.py`：WASAPI loopback 系统音频采集（Windows）
+- `audio_preprocess.py`：音频预处理链路（单声道、16k、滤波、降噪、归一化）
+- `segmenter.py`：混合分段与滑窗工具（chunk + overlap）
+- `transcriber.py`：双阶段识别、上下文注入、GPU 回退、文本更新事件
+- `postprocess.py`：去重复、清理、标点、可读性断句
+- `hotwords.py`：领域热词词典加载与替换
+- `correction.py`：二次文本校正层（合并断裂句、移除坏片段）
+- `config.py`：参数中心 + 预设（直播 / 培训 / 背景音乐 / 高精度）
+- `gui.py`：GUI（初稿区 + 修正版区）
+- `main.py`：主编排（线程、队列、写文件、异常管理）
+- `start_windows.bat`：Windows 启动脚本
 
 ---
 
-## 安装
+## 2. 关键能力
+
+### 双阶段识别（核心）
+
+1. `realtime_mode`：低延迟初稿（快速参数）
+2. `quality_mode`：对最近 10~20 秒上下文做高精度重识别（强参数）
+3. GUI 展示“初稿 -> 修正版覆盖”
+
+### 滑窗 + 重叠
+
+- 识别时使用 `chunk_length_sec + overlap_seconds`
+- 降低长句断裂、重复、漏词
+
+### 上下文注入
+
+- 将前几段修正版作为 `initial_prompt` 的上下文
+- 提升长句连贯性和固定短语稳定性
+
+### 音频预处理强化
+
+- 转单声道
+- 重采样 16kHz
+- RMS 归一化
+- 高通 + 低通 + 带通
+- 轻量降噪 + 背景音乐抑制
+
+### 日语后处理 + 热词词典
+
+- 去口吃式重复
+- 去重复短语
+- 标点补全与可读断句
+- 领域错词替换（如 報連相 / 外勤先 / 査定 / 評価制度）
+
+---
+
+## 3. 参数与预设
+
+所有关键参数集中在 `config.py`：
+
+- `beam_size`
+- `best_of`
+- `temperature`
+- `vad_filter`
+- `chunk_length_sec`
+- `overlap_seconds`
+- `no_speech_threshold`
+- `log_prob_threshold`
+
+推荐预设：
+
+- 直播：`PRESETS["直播场景"]`
+- 培训讲话：`PRESETS["培训讲话"]`
+- 背景音乐：`PRESETS["背景音乐场景"]`（默认）
+- 高精度：`PRESETS["高精度模式"]`
+
+---
+
+## 4. GPU / CPU 说明
+
+- 默认先尝试：`device="cuda"`, `compute_type="float16"`
+- 若 CUDA 初始化失败：自动回退 CPU
+- 若运行时 GPU 报错（cublas/cudnn/cuda）：当前音频立即 CPU 重试，不丢数据
+
+---
+
+## 5. 安装与运行
 
 ```bash
 pip install -r requirements.txt
-```
-
----
-
-## 运行
-
-```bash
 python main.py
 ```
 
----
+Windows 也可双击：
 
-## 默认识别参数（高精度阶段）
-
-- `model_size="medium"`（可改 `large-v3`）
-- `language="ja"`
-- `vad_filter=True`
-- `beam_size=8`
-- `best_of=5`
-- `condition_on_previous_text=True`
-- `temperature=0.0`
-
-默认 `initial_prompt`：
-
-> これは日本語の動画音声の文字起こしです。自然な日本語として出力してください。句読点を適切に補い、不要な繰り返しは減らし、固有名詞やカタカナ語をできるだけ正確に保ってください。
-
----
-
-## 音频预处理（送入转写前）
-
-- 转单声道
-- 统一 16k（必要时重采样）
-- RMS 音量归一化
-- 轻量 band-pass（人声频段）
-- 背景噪声能量抑制（轻量 noise gate）
-
-这些逻辑已封装在 `transcriber.py` 的独立函数中，便于替换更强降噪/增强模型。
-
----
-
-## 分段策略（混合）
-
-- 采集短帧：默认 `0.4s`
-- 有声则累积
-- 尾部静音超过 `0.8s` 且段长超过 `2.5s` → 切段
-- 即使无静音，超过 `11s` 强制切段
-- 长段识别使用 `7s` 窗口 + `1s` 重叠拼接
-
----
-
-## 输出格式
-
-TXT（主输出）：
-
-```text
-[12:10:01]
-今日はですね、ちょっと新しい企画について話したいと思います。
-
-[12:10:08]
-まず最初に前回の内容を振り返って、そのあと今後の予定なんですが……
+```bash
+start_windows.bat
 ```
 
-可选 SRT：勾选 GUI 中“可选导出 SRT”。
+---
+
+## 6. 热词词典
+
+GUI 可指定热词词典路径（json 或 txt）：
+
+### JSON 示例
+
+```json
+{
+  "法連想": "報連相",
+  "外見先": "外勤先",
+  "さて": "査定"
+}
+```
+
+### TXT 示例
+
+```text
+法連想 => 報連相
+外見先 => 外勤先
+さて => 査定
+```
 
 ---
 
-## 稳定性说明
+## 7. 如何测试“精度提升”
 
-- 音频线程异常：记录日志并在 GUI 状态提示，不会直接让界面崩溃。
-- 转写异常：记录并尽量继续后续段落处理。
-- 停止程序：会 flush 最后一段并尽可能安全释放线程与文件句柄。
+建议用同一段“有背景音乐 + 连续讲话”音频，比较：
+
+1. 旧版本输出
+2. 新版本初稿输出
+3. 新版本修正版输出（最终 txt）
+
+重点观察：
+
+- 固定词汇（報連相 / 外勤先 / 査定 / 評価制度）命中率
+- 重复短语数量
+- 长句断裂/漏词情况
+- 可读性（是否接近字幕句子）
+
+---
+
+## 8. 下一步可继续提升
+
+1. 引入专业降噪/分离模型（Demucs / RNNoise / DNS）
+2. 引入语言模型重评分（N-best rerank）
+3. 强化领域语料微调（术语词库 + prompt模板）
+4. 增加真正的时间轴对齐与高质量 SRT/VTT 导出
+5. 加入自动评估（CER/WER + 术语命中率）
