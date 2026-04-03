@@ -1,0 +1,15 @@
+{
+  "hotkey": "f8",
+  "llm_provider": "openai",
+  "base_url": "",
+  "classifier_model": "gpt-4o-mini",
+  "summary_model": "gpt-4o-mini",
+  "cheap_model": "gpt-4o-mini",
+  "balanced_model": "gpt-5.4-mini",
+  "premium_model": "gpt-5.4",
+  "openai_timeout": 20.0,
+  "openai_system_prompt": "你是简洁且可靠的桌面助手。",
+  "max_history_turns": 6,
+  "max_history_chars": 2200,
+  "log_level": "INFO"
+}

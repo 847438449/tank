@@ -1,0 +1,13 @@
+{
+  "hotkey": "f8",
+  "sample_rate": 16000,
+  "channels": 1,
+  "overlay_width": 420,
+  "overlay_height": 120,
+  "overlay_offset_x": 24,
+  "overlay_offset_y": 24,
+  "openai_model": "gpt-4.1-mini",
+  "openai_system_prompt": "You are a concise and helpful assistant.",
+  "openai_timeout": 20.0,
+  "log_level": "INFO"
+}
