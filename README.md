@@ -55,3 +55,10 @@ python main.py
 - “比较这两个方案的优缺点” -> medium
 - “帮我设计一个带热键录音、语音转文字、悬浮窗显示的桌面架构” -> complex
 - “为什么这个程序会报错，应该如何排查” -> complex
+
+
+## 热键调试模式
+```bash
+python main.py --debug-hotkeys
+```
+该模式只打印按键事件和热键匹配日志，不执行录音/STT/LLM。

@@ -22,3 +22,8 @@ def test_parse_hotkey_f8() -> None:
     parsed = parse_hotkey_string("f8")
     assert parsed.is_special is True
     assert parsed.normalized == "f8"
+
+
+def test_parse_hotkey_invalid_fallback() -> None:
+    parsed = parse_hotkey_string("invalid-key", default="f10")
+    assert parsed.normalized == "f10"

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
 import threading
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QTimer
@@ -22,9 +24,41 @@ from speech_to_text import speech_to_text
 from utils.logger import setup_logging
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--debug-hotkeys", action="store_true", help="Only listen and print key events")
+    return parser.parse_args()
+
+
+def run_debug_hotkeys(cfg: AppConfig) -> int:
+    logging.info("Running in debug-hotkeys mode. No recording/STT/LLM will run.")
+
+    manager = HotkeyManager(
+        record_hotkey=cfg.hotkey,
+        settings_hotkey=cfg.settings_hotkey,
+        on_record_press=lambda: logging.info("Recording started"),
+        on_record_release=lambda: logging.info("Recording stopped"),
+        on_settings_press=lambda: logging.info("Settings hotkey triggered"),
+    )
+    manager.start()
+
+    try:
+        while True:
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        logging.info("Debug hotkeys mode stopped by user")
+    finally:
+        manager.stop()
+    return 0
+
+
 def main() -> int:
+    args = parse_args()
     cfg = load_config()
     setup_logging(cfg.log_level)
+
+    if args.debug_hotkeys:
+        return run_debug_hotkeys(cfg)
 
     app = QApplication(sys.argv)
 
