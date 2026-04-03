@@ -31,6 +31,11 @@ class AppConfig:
     balanced_model: str = BALANCED_MODEL
     premium_model: str = PREMIUM_MODEL
     openai_timeout: float = 20.0
+    asr_provider: str = "faster_whisper"
+    asr_model_size: str = "small"
+    asr_language: str = "zh"
+    asr_device: str = "cpu"
+    asr_compute_type: str = "int8"
     openai_system_prompt: str = "你是简洁且可靠的桌面助手。"
     max_history_turns: int = 6
     max_history_chars: int = 2200

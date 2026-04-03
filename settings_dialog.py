@@ -37,6 +37,11 @@ class SettingsDialog(QDialog):
         self.premium_input = QLineEdit(settings.get("premium_model", "gpt-5.4"))
 
         self.timeout_input = QLineEdit(str(settings.get("openai_timeout", 20.0)))
+        self.asr_provider_input = QLineEdit(settings.get("asr_provider", "faster_whisper"))
+        self.asr_model_size_input = QLineEdit(settings.get("asr_model_size", "small"))
+        self.asr_language_input = QLineEdit(settings.get("asr_language", "zh"))
+        self.asr_device_input = QLineEdit(settings.get("asr_device", "cpu"))
+        self.asr_compute_type_input = QLineEdit(settings.get("asr_compute_type", "int8"))
         self.prompt_input = QTextEdit(settings.get("openai_system_prompt", ""))
 
         self.turns_input = QSpinBox()
@@ -58,6 +63,11 @@ class SettingsDialog(QDialog):
         layout.addRow("Balanced Model", self.balanced_input)
         layout.addRow("Premium Model", self.premium_input)
         layout.addRow("Timeout", self.timeout_input)
+        layout.addRow("ASR Provider", self.asr_provider_input)
+        layout.addRow("ASR Model Size", self.asr_model_size_input)
+        layout.addRow("ASR Language", self.asr_language_input)
+        layout.addRow("ASR Device", self.asr_device_input)
+        layout.addRow("ASR Compute Type", self.asr_compute_type_input)
         layout.addRow("System Prompt", self.prompt_input)
         layout.addRow("Max History Turns", self.turns_input)
         layout.addRow("Max History Chars", self.chars_input)
@@ -79,6 +89,11 @@ class SettingsDialog(QDialog):
         self.balanced_input.setText(settings.get("balanced_model", "gpt-5.4-mini"))
         self.premium_input.setText(settings.get("premium_model", "gpt-5.4"))
         self.timeout_input.setText(str(settings.get("openai_timeout", 20.0)))
+        self.asr_provider_input.setText(settings.get("asr_provider", "faster_whisper"))
+        self.asr_model_size_input.setText(settings.get("asr_model_size", "small"))
+        self.asr_language_input.setText(settings.get("asr_language", "zh"))
+        self.asr_device_input.setText(settings.get("asr_device", "cpu"))
+        self.asr_compute_type_input.setText(settings.get("asr_compute_type", "int8"))
         self.prompt_input.setPlainText(settings.get("openai_system_prompt", ""))
         self.turns_input.setValue(int(settings.get("max_history_turns", 6)))
         self.chars_input.setValue(int(settings.get("max_history_chars", 2200)))
@@ -114,6 +129,11 @@ class SettingsDialog(QDialog):
             "balanced_model": self.balanced_input.text().strip(),
             "premium_model": self.premium_input.text().strip(),
             "openai_timeout": timeout,
+            "asr_provider": self.asr_provider_input.text().strip() or "faster_whisper",
+            "asr_model_size": self.asr_model_size_input.text().strip() or "small",
+            "asr_language": self.asr_language_input.text().strip() or "zh",
+            "asr_device": self.asr_device_input.text().strip() or "cpu",
+            "asr_compute_type": self.asr_compute_type_input.text().strip() or "int8",
             "openai_system_prompt": self.prompt_input.toPlainText().strip(),
             "max_history_turns": int(self.turns_input.value()),
             "max_history_chars": int(self.chars_input.value()),

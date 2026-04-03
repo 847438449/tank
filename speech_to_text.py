@@ -1,64 +1,67 @@
 from __future__ import annotations
 
 import logging
-import wave
 from pathlib import Path
-from typing import Protocol
+from typing import Any
 
 
-class SpeechToTextEngine(Protocol):
-    """Stable engine interface for swapping STT backends later."""
+def _load_faster_whisper_model(model_size: str, device: str, compute_type: str):
+    from faster_whisper import WhisperModel
 
-    def transcribe(self, audio_path: Path) -> str:
-        ...
-
-
-class PlaceholderSTTEngine:
-    """Replaceable default STT implementation.
-
-    Current behavior validates wav file and returns a placeholder text.
-    Swap this class with real engines (Whisper/Vosk/OpenAI transcription) later.
-    """
-
-    def transcribe(self, audio_path: Path) -> str:
-        with wave.open(str(audio_path), "rb") as wav:
-            n_frames = wav.getnframes()
-            frame_rate = wav.getframerate() or 1
-            duration = n_frames / frame_rate
-
-        if duration <= 0:
-            return "[speech_to_text error] 音频时长为 0 秒"
-
-        return f"[speech_to_text placeholder] 已读取音频 {duration:.2f}s，待接入真实 ASR。"
+    logging.info(
+        "Loading ASR model... provider=faster_whisper model=%s device=%s compute=%s",
+        model_size,
+        device,
+        compute_type,
+    )
+    return WhisperModel(model_size, device=device, compute_type=compute_type)
 
 
-def speech_to_text(audio_path: str | Path, engine: SpeechToTextEngine | None = None) -> str:
-    """Transcribe wav file and return text with stable interface.
+_MODEL_CACHE: dict[tuple[str, str, str], Any] = {}
 
-    Args:
-        audio_path: Path to wav file.
-        engine: Optional custom STT backend implementing `transcribe`.
+
+def _get_model(model_size: str, device: str, compute_type: str):
+    key = (model_size, device, compute_type)
+    if key not in _MODEL_CACHE:
+        _MODEL_CACHE[key] = _load_faster_whisper_model(model_size, device, compute_type)
+    return _MODEL_CACHE[key]
+
+
+def speech_to_text(audio_path: str | Path, settings: dict | None = None) -> str:
+    """Transcribe wav file to real text using local ASR.
 
     Returns:
-        Recognized text, or explicit error text if recognition fails.
+        - real recognized text
+        - "未识别到有效语音" when empty
+        - "语音识别失败，请重试" on failure
     """
     path = Path(audio_path)
-    if not path.exists():
-        return f"[speech_to_text error] 文件不存在: {path}"
+    if not path.exists() or path.suffix.lower() != ".wav":
+        return "语音识别失败，请重试"
 
-    if path.suffix.lower() != ".wav":
-        return f"[speech_to_text error] 仅支持 wav 文件: {path}"
+    cfg = settings or {}
+    provider = (cfg.get("asr_provider") or "faster_whisper").strip().lower()
+    model_size = (cfg.get("asr_model_size") or "small").strip()
+    language = (cfg.get("asr_language") or "zh").strip()
+    device = (cfg.get("asr_device") or "cpu").strip()
+    compute_type = (cfg.get("asr_compute_type") or "int8").strip()
 
-    backend = engine or PlaceholderSTTEngine()
+    if provider != "faster_whisper":
+        logging.warning("Unsupported ASR provider=%s, fallback to faster_whisper", provider)
 
     try:
-        result = (backend.transcribe(path) or "").strip()
-        if not result:
-            return "[speech_to_text error] 识别结果为空"
-        return result
-    except wave.Error as exc:
-        logging.exception("Invalid wav file: %s", path)
-        return f"[speech_to_text error] wav 文件无效: {exc}"
-    except Exception as exc:
-        logging.exception("speech_to_text failed: %s", path)
-        return f"[speech_to_text error] 识别失败: {exc}"
+        model = _get_model(model_size=model_size, device=device, compute_type=compute_type)
+        segments, _ = model.transcribe(str(path), language=language, vad_filter=True)
+        text = "".join((seg.text or "") for seg in segments).strip()
+
+        if not text:
+            return "未识别到有效语音"
+
+        logging.info("STT result: %s", text)
+        return text
+    except ModuleNotFoundError:
+        logging.exception("faster-whisper not installed")
+        return "语音识别失败，请重试"
+    except Exception:
+        logging.exception("ASR transcription failed")
+        return "语音识别失败，请重试"

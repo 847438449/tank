@@ -62,3 +62,8 @@ python main.py
 python main.py --debug-hotkeys
 ```
 该模式只打印按键事件和热键匹配日志，不执行录音/STT/LLM。
+
+
+## ASR 配置（faster-whisper）
+在 `settings.json` 可设置：`asr_provider`, `asr_model_size`, `asr_language`, `asr_device`, `asr_compute_type`。
+首次运行会下载对应 Whisper 模型（例如 `small`）。CPU 较慢可改 `tiny` 或 `base`。

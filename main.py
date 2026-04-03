@@ -142,7 +142,7 @@ class AppController(QObject):
         try:
             self.recorder.start_recording()
             logging.info("Recording started")
-            self.request_show_overlay("🎤 Recording...")
+            self.request_show_overlay("正在录音...")
         except Exception:
             logging.exception("on_press failed")
             self.request_show_overlay("录音启动失败")
@@ -150,15 +150,22 @@ class AppController(QObject):
     def process_audio(self, audio_path: Path) -> None:
         try:
             logging.info("STT started")
-            text = speech_to_text(audio_path)
+            stt_settings = {
+                "asr_provider": self.cfg.asr_provider,
+                "asr_model_size": self.cfg.asr_model_size,
+                "asr_language": self.cfg.asr_language,
+                "asr_device": self.cfg.asr_device,
+                "asr_compute_type": self.cfg.asr_compute_type,
+            }
+            text = speech_to_text(audio_path, settings=stt_settings)
             logging.info("STT result: %s", text)
 
-            if text.startswith("[speech_to_text error]"):
+            if text in {"未识别到有效语音", "语音识别失败，请重试"}:
                 self.request_show_overlay(text)
                 return
 
             if not text.strip():
-                self.request_show_overlay("未识别到有效文本")
+                self.request_show_overlay("未识别到有效语音")
                 return
 
             if self.classifier_provider is None:
@@ -175,6 +182,7 @@ class AppController(QObject):
             )
 
             system_prompt = build_answer_prompt(text, complexity)
+            self.request_show_overlay("正在思考...")
             logging.info("LLM request started")
             answer, used_model, fallback_triggered = ask_with_fallback(
                 user_text=text,
@@ -221,7 +229,7 @@ class AppController(QObject):
                 self.request_show_overlay("未录到音频")
                 return
 
-            self.request_show_overlay("⏳ 正在识别与请求模型...")
+            self.request_show_overlay("正在识别语音...")
             threading.Thread(target=self.process_audio, args=(audio_path,), daemon=True).start()
         except Exception:
             logging.exception("on_release failed")
