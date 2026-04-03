@@ -1,17 +1,18 @@
-"""Hybrid segmenter and sliding-window utilities."""
+"""Hybrid segmenter reading from ring buffer to avoid capture discontinuity."""
 
 from __future__ import annotations
 
 import logging
+import queue
 import threading
 from dataclasses import dataclass
-from queue import Empty, Queue
 from typing import Optional
 
 import numpy as np
 
 from audio_capture import AudioFrame
 from config import SegmentParams
+from ring_buffer import RingBuffer
 
 
 @dataclass
@@ -26,14 +27,14 @@ class AudioSegment:
 class SegmenterWorker:
     def __init__(
         self,
-        input_queue: Queue,
-        output_queue: Queue,
-        error_queue: Optional[Queue],
+        input_buffer: RingBuffer[AudioFrame | None],
+        output_queue: queue.Queue,
+        error_queue,
         cfg: SegmentParams,
         sample_rate: int,
         logger: Optional[logging.Logger] = None,
     ) -> None:
-        self.input_queue = input_queue
+        self.input_buffer = input_buffer
         self.output_queue = output_queue
         self.error_queue = error_queue
         self.cfg = cfg
@@ -60,23 +61,28 @@ class SegmenterWorker:
 
     def _run(self) -> None:
         while not self._stop.is_set():
-            try:
-                frame = self.input_queue.get(timeout=0.2)
-            except Empty:
-                continue
+            frame = self.input_buffer.get(timeout=0.2)
+            if frame is None:
+                self._flush(force=True)
+                self._safe_put(None)
+                break
 
             try:
-                if frame is None:
-                    self._flush(force=True)
-                    self.output_queue.put(None)
-                    break
                 self._consume(frame)
             except Exception as exc:
                 self.logger.exception("Segmenter error")
                 if self.error_queue is not None:
                     self.error_queue.put(f"分段线程异常: {exc}")
-            finally:
-                self.input_queue.task_done()
+
+    def _safe_put(self, item) -> None:
+        try:
+            self.output_queue.put_nowait(item)
+        except queue.Full:
+            try:
+                self.output_queue.get_nowait()
+                self.output_queue.put_nowait(item)
+            except Exception:
+                pass
 
     def _consume(self, frame: AudioFrame) -> None:
         if frame.is_speech or self._frames:
@@ -112,7 +118,7 @@ class SegmenterWorker:
             end_ts=self._start_ts + self._duration,
         )
         self._seg_id += 1
-        self.output_queue.put(seg)
+        self._safe_put(seg)
 
         self._frames.clear()
         self._duration = 0.0

@@ -1,4 +1,4 @@
-"""Entrypoint wiring capture -> segmenter -> transcriber -> GUI/file for high-quality JP subtitles."""
+"""Entrypoint wiring capture -> segmenter -> transcriber with discontinuity-safe buffering."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from config import PRESETS, AppConfig
 from file_writer import TranscriptFileWriter
 from gui import TranscriberGUI
 from hotwords import load_hotwords
+from ring_buffer import RingBuffer
 from segmenter import SegmenterWorker
 from transcriber import TranscriptionUpdate, TwoStageTranscriber
 
@@ -25,9 +26,10 @@ class AppController:
 
         self.cfg: AppConfig = PRESETS["背景音乐场景"]
 
-        self.frame_queue: Queue = Queue(maxsize=200)
-        self.segment_queue: Queue = Queue(maxsize=100)
-        self.update_queue: Queue = Queue()
+        # Capture side ring buffer: guarantees capture never blocks on ASR slowdown.
+        self.frame_buffer: RingBuffer = RingBuffer(max_items=512)
+        self.segment_queue: Queue = Queue(maxsize=64)
+        self.update_queue: Queue = Queue(maxsize=128)
         self.error_queue: Queue = Queue()
 
         self.capture: Optional[WasapiLoopbackCapture] = None
@@ -49,7 +51,7 @@ class AppController:
             self.writer.open(txt_path, export_srt=export_srt)
 
             self.capture = WasapiLoopbackCapture(
-                output_queue=self.frame_queue,
+                output_buffer=self.frame_buffer,
                 error_queue=self.error_queue,
                 sample_rate=self.cfg.audio.target_sample_rate,
                 frame_seconds=self.cfg.segment.frame_seconds,
@@ -58,7 +60,7 @@ class AppController:
                 logger=logging.getLogger("audio_capture"),
             )
             self.segmenter = SegmenterWorker(
-                input_queue=self.frame_queue,
+                input_buffer=self.frame_buffer,
                 output_queue=self.segment_queue,
                 error_queue=self.error_queue,
                 cfg=self.cfg.segment,
@@ -79,7 +81,7 @@ class AppController:
             self.capture.start()
 
             self._running = True
-            self.gui.set_status("状态：运行中（初稿→修正版）")
+            self.gui.set_status("状态：运行中（连续采集保护已启用）")
             self._poll()
             return True
         except Exception as exc:
@@ -114,7 +116,6 @@ class AppController:
 
         self._drain_updates()
         self._drain_errors()
-
         self.gui.root.after(150, self._poll)
 
     def _drain_updates(self) -> None:

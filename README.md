@@ -152,3 +152,11 @@ GUI 可指定热词词典路径（json 或 txt）：
 3. 强化领域语料微调（术语词库 + prompt模板）
 4. 增加真正的时间轴对齐与高质量 SRT/VTT 导出
 5. 加入自动评估（CER/WER + 术语命中率）
+
+
+## 9. data discontinuity 修复说明
+
+- 录音线程与识别线程已完全解耦：`capture -> RingBuffer -> segmenter -> transcriber`。
+- 采集线程写入 `RingBuffer` 时永不阻塞，识别卡顿不会打断采集。
+- 当下游短时拥塞时，环形缓存会覆盖最旧帧并记录 dropped 计数，优先保证“实时连续采集”。
+- 分段线程向识别队列采用非阻塞写入，避免反向卡住采集链路。
