@@ -36,6 +36,10 @@ class AppConfig:
     asr_language: str = "zh"
     asr_device: str = "cpu"
     asr_compute_type: str = "int8"
+    asr_vad_filter: bool = False
+    asr_beam_size: int = 1
+    asr_min_silence_duration_ms: int = 500
+    asr_device_index: int | None = None
     openai_system_prompt: str = "你是简洁且可靠的桌面助手。"
     max_history_turns: int = 6
     max_history_chars: int = 2200

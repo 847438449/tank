@@ -39,7 +39,11 @@ class AppController(QObject):
             offset_x=cfg.overlay_offset_x,
             offset_y=cfg.overlay_offset_y,
         )
-        self.recorder = AudioRecorder(sample_rate=cfg.sample_rate, channels=cfg.channels)
+        self.recorder = AudioRecorder(
+            sample_rate=cfg.sample_rate,
+            channels=cfg.channels,
+            device_index=cfg.asr_device_index,
+        )
         self.hotkey_manager: HotkeyManager | None = None
         self.settings_dialog: SettingsDialog | None = None
 
@@ -127,6 +131,11 @@ class AppController(QObject):
             latest = reload_settings()
             new_cfg = AppConfig(**{k: v for k, v in latest.items() if k in AppConfig.__dataclass_fields__})
             self.rebuild_runtime_from_config(new_cfg)
+            self.recorder = AudioRecorder(
+                sample_rate=self.cfg.sample_rate,
+                channels=self.cfg.channels,
+                device_index=self.cfg.asr_device_index,
+            )
             if self.hotkey_manager is not None:
                 self.hotkey_manager.reload(self.cfg.hotkey, self.cfg.settings_hotkey)
             self.request_show_overlay("设置已保存并生效")
@@ -156,12 +165,19 @@ class AppController(QObject):
                 "asr_language": self.cfg.asr_language,
                 "asr_device": self.cfg.asr_device,
                 "asr_compute_type": self.cfg.asr_compute_type,
+                "asr_vad_filter": self.cfg.asr_vad_filter,
+                "asr_beam_size": self.cfg.asr_beam_size,
+                "asr_min_silence_duration_ms": self.cfg.asr_min_silence_duration_ms,
             }
             text = speech_to_text(audio_path, settings=stt_settings)
             logging.info("STT result: %s", text)
 
             if text in {"未识别到有效语音", "语音识别失败，请重试"}:
-                self.request_show_overlay(text)
+                stats = self.recorder.last_audio_stats
+                if text == "未识别到有效语音" and stats is not None and stats.near_silence:
+                    self.request_show_overlay("没有识别到有效语音，请检查麦克风或提高音量")
+                else:
+                    self.request_show_overlay(text)
                 return
 
             if not text.strip():

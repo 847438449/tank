@@ -10,5 +10,14 @@
   "openai_system_prompt": "You are a concise and helpful assistant.",
   "openai_timeout": 20.0,
   "log_level": "INFO",
-  "settings_hotkey": "f10"
+  "settings_hotkey": "f10",
+  "asr_provider": "faster_whisper",
+  "asr_model_size": "small",
+  "asr_language": "zh",
+  "asr_device": "cpu",
+  "asr_compute_type": "int8",
+  "asr_vad_filter": false,
+  "asr_beam_size": 1,
+  "asr_min_silence_duration_ms": 500,
+  "asr_device_index": null
 }

@@ -67,3 +67,5 @@ python main.py --debug-hotkeys
 ## ASR 配置（faster-whisper）
 在 `settings.json` 可设置：`asr_provider`, `asr_model_size`, `asr_language`, `asr_device`, `asr_compute_type`。
 首次运行会下载对应 Whisper 模型（例如 `small`）。CPU 较慢可改 `tiny` 或 `base`。
+
+- 可调 ASR 参数：`asr_vad_filter`、`asr_beam_size`、`asr_min_silence_duration_ms`、`asr_device_index`。
