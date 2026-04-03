@@ -1,4 +1,4 @@
-"""Entrypoint wiring capture -> segmenter -> transcriber with discontinuity-safe buffering."""
+"""Entrypoint wiring capture -> segmenter -> transcriber with Bluetooth-stable buffering."""
 
 from __future__ import annotations
 
@@ -26,8 +26,7 @@ class AppController:
 
         self.cfg: AppConfig = PRESETS["背景音乐场景"]
 
-        # Capture side ring buffer: guarantees capture never blocks on ASR slowdown.
-        self.frame_buffer: RingBuffer = RingBuffer(max_items=512)
+        self.frame_buffer: RingBuffer = RingBuffer(max_items=self.cfg.capture.ring_buffer_items)
         self.segment_queue: Queue = Queue(maxsize=64)
         self.update_queue: Queue = Queue(maxsize=128)
         self.error_queue: Queue = Queue()
@@ -53,10 +52,13 @@ class AppController:
             self.capture = WasapiLoopbackCapture(
                 output_buffer=self.frame_buffer,
                 error_queue=self.error_queue,
-                sample_rate=self.cfg.audio.target_sample_rate,
-                frame_seconds=self.cfg.segment.frame_seconds,
+                sample_rate=self.cfg.capture.sample_rate,
+                frame_seconds=self.cfg.capture.frame_seconds,
                 channels=2,
-                silence_rms_threshold=0.008,
+                silence_rms_threshold=self.cfg.capture.silence_rms_threshold,
+                default_blocksize=self.cfg.capture.default_blocksize,
+                bluetooth_blocksize=self.cfg.capture.bluetooth_blocksize,
+                bluetooth_mode=self.cfg.capture.bluetooth_mode,
                 logger=logging.getLogger("audio_capture"),
             )
             self.segmenter = SegmenterWorker(
@@ -64,7 +66,7 @@ class AppController:
                 output_queue=self.segment_queue,
                 error_queue=self.error_queue,
                 cfg=self.cfg.segment,
-                sample_rate=self.cfg.audio.target_sample_rate,
+                sample_rate=self.cfg.capture.sample_rate,
                 logger=logging.getLogger("segmenter"),
             )
             self.transcriber = TwoStageTranscriber(
@@ -81,7 +83,7 @@ class AppController:
             self.capture.start()
 
             self._running = True
-            self.gui.set_status("状态：运行中（连续采集保护已启用）")
+            self.gui.set_status("状态：运行中（蓝牙耳机稳定模式）")
             self._poll()
             return True
         except Exception as exc:
@@ -116,7 +118,8 @@ class AppController:
 
         self._drain_updates()
         self._drain_errors()
-        self.gui.root.after(150, self._poll)
+        # Lower GUI refresh frequency to reduce main thread pressure.
+        self.gui.root.after(300, self._poll)
 
     def _drain_updates(self) -> None:
         try:
