@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QPoint, QPropertyAnimation, QTimer, Qt
+from PySide6.QtCore import QPoint, QPropertyAnimation, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QCursor, QKeyEvent
 from PySide6.QtWidgets import QGraphicsOpacityEffect, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 
 class OverlayWindow(QWidget):
+    signal_show_message = Signal(str)
+    signal_close_overlay = Signal()
+
     def __init__(
         self,
         width: int = 420,
@@ -24,7 +27,6 @@ class OverlayWindow(QWidget):
         self.offset_y = offset_y
         self.visible_ms = visible_ms
         self.fade_ms = fade_ms
-        self._is_closed_manually = False
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -88,18 +90,30 @@ class OverlayWindow(QWidget):
         layout.addWidget(self.container)
         layout.setContentsMargins(0, 0, 0, 0)
 
+        self.signal_show_message.connect(self._show_message_impl)
+        self.signal_close_overlay.connect(self._close_overlay_impl)
+
+    def show_message(self, text: str) -> None:
+        """Thread-safe public API."""
+        self.signal_show_message.emit(text or "")
+
+    def close_overlay(self) -> None:
+        """Thread-safe public API."""
+        self.signal_close_overlay.emit()
+
+    @Slot()
     def _start_fade(self) -> None:
         self._fade_animation.stop()
         self._fade_animation.setStartValue(self._opacity_effect.opacity())
         self._fade_animation.setEndValue(0.0)
         self._fade_animation.start()
 
-    def show_message(self, text: str) -> None:
+    @Slot(str)
+    def _show_message_impl(self, text: str) -> None:
         self._fade_timer.stop()
         self._fade_animation.stop()
-        self._is_closed_manually = False
 
-        self.label.setText(text or "")
+        self.label.setText(text)
         self._opacity_effect.setOpacity(1.0)
 
         cursor_pos = QCursor.pos()
@@ -110,8 +124,8 @@ class OverlayWindow(QWidget):
         self._fade_timer.start(self.visible_ms)
         logging.info("Overlay shown")
 
-    def close_overlay(self) -> None:
-        self._is_closed_manually = True
+    @Slot()
+    def _close_overlay_impl(self) -> None:
         self._fade_timer.stop()
         self._fade_animation.stop()
         self.hide()

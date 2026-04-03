@@ -286,6 +286,11 @@ class HotkeyManager:
         self._fallback_timer.start()
 
     def start(self) -> None:
+        if not HAS_PYNPUT:
+            logging.warning("pynput unavailable, falling back to keyboard listener")
+            self._switch_to_keyboard_fallback("pynput unavailable")
+            return
+
         try:
             self._impl = self._build_pynput()
             self._impl.start()
@@ -296,8 +301,8 @@ class HotkeyManager:
             )
             self._start_fallback_watchdog()
             return
-        except Exception:
-            logging.exception("Failed to start pynput listener")
+        except Exception as exc:
+            logging.warning("pynput init failed (%s), falling back to keyboard listener", exc)
 
         self._switch_to_keyboard_fallback("pynput init failure")
 
