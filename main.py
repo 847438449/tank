@@ -10,7 +10,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Qt, Signal, Slot
 from PySide6.QtWidgets import QApplication
 
-from audio_recorder import AudioRecorder
+from audio_recorder import AudioRecorder, RecorderOpenError
 from config import AppConfig, load_config
 from context_manager import build_context_for_request, trim_history
 from hotkey_listener import HotkeyManager
@@ -151,10 +151,16 @@ class AppController(QObject):
         try:
             self.recorder.start_recording()
             logging.info("Recording started")
-            self.request_show_overlay("正在录音...")
+            if self.recorder.last_device_notice:
+                self.request_show_overlay(self.recorder.last_device_notice)
+            else:
+                self.request_show_overlay("正在录音...")
+        except RecorderOpenError as exc:
+            logging.warning("Recorder open error: %s", exc)
+            self.request_show_overlay(exc.user_message)
         except Exception:
             logging.exception("on_press failed")
-            self.request_show_overlay("录音启动失败")
+            self.request_show_overlay("无法打开当前麦克风，请检查设备编号或系统输入设置")
 
     def process_audio(self, audio_path: Path) -> None:
         try:

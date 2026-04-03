@@ -64,6 +64,13 @@ class SettingsDialog(QDialog):
         self.asr_device_index_input = QLineEdit(
             "" if settings.get("asr_device_index") is None else str(settings.get("asr_device_index"))
         )
+        self.use_default_device_btn = QPushButton("使用默认设备")
+        self.use_default_device_btn.clicked.connect(lambda: self.asr_device_index_input.setText(""))
+        device_index_widget = QWidget(self)
+        device_index_layout = QHBoxLayout(device_index_widget)
+        device_index_layout.setContentsMargins(0, 0, 0, 0)
+        device_index_layout.addWidget(self.asr_device_index_input)
+        device_index_layout.addWidget(self.use_default_device_btn)
 
         self.prompt_input = QTextEdit(settings.get("openai_system_prompt", ""))
 
@@ -94,7 +101,7 @@ class SettingsDialog(QDialog):
         layout.addRow("ASR VAD Filter", self.asr_vad_filter_input)
         layout.addRow("ASR Beam Size", self.asr_beam_size_input)
         layout.addRow("ASR Min Silence(ms)", self.asr_min_silence_input)
-        layout.addRow("ASR Device Index", self.asr_device_index_input)
+        layout.addRow("ASR Device Index（请填写 sounddevice 设备编号）", device_index_widget)
         layout.addRow("System Prompt", self.prompt_input)
         layout.addRow("Max History Turns", self.turns_input)
         layout.addRow("Max History Chars", self.chars_input)
@@ -125,7 +132,7 @@ class SettingsDialog(QDialog):
         if not devices:
             self.device_list_view.setPlainText("未发现输入设备")
             return
-        lines = [f"#{d['index']}: {d['name']} (ch={d['max_input_channels']}, sr={d['default_samplerate']})" for d in devices]
+        lines = [f"#{d['index']}: {d['name']} (inputs={d['max_input_channels']}, default_sr={d['default_samplerate']:.0f}){' [默认]' if d.get('is_default') else ''}" for d in devices]
         self.device_list_view.setPlainText("\n".join(lines))
 
     def update_settings(self, settings: dict[str, Any]) -> None:
