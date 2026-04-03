@@ -9,5 +9,6 @@
   "openai_model": "gpt-4.1-mini",
   "openai_system_prompt": "You are a concise and helpful assistant.",
   "openai_timeout": 20.0,
-  "log_level": "INFO"
+  "log_level": "INFO",
+  "settings_hotkey": "f10"
 }

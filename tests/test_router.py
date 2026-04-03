@@ -1,3 +1,4 @@
+from hotkey_listener import parse_hotkey_string
 from router import quick_rule_classify
 
 
@@ -15,3 +16,9 @@ def test_complex_architecture() -> None:
 
 def test_complex_debug() -> None:
     assert quick_rule_classify("为什么这个程序会报错，应该如何排查") == "complex"
+
+
+def test_parse_hotkey_f8() -> None:
+    parsed = parse_hotkey_string("f8")
+    assert parsed.is_special is True
+    assert parsed.normalized == "f8"

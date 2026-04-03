@@ -15,6 +15,7 @@ PREMIUM_MODEL = "gpt-5.4"
 @dataclass
 class AppConfig:
     hotkey: str = "f8"
+    settings_hotkey: str = "f10"
     sample_rate: int = 16000
     channels: int = 1
     overlay_width: int = 420

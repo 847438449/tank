@@ -1,5 +1,6 @@
 {
   "hotkey": "f8",
+  "settings_hotkey": "f10",
   "llm_provider": "openai",
   "base_url": "",
   "classifier_model": "gpt-4o-mini",

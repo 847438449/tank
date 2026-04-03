@@ -5,16 +5,19 @@ import sys
 import threading
 from pathlib import Path
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from audio_recorder import AudioRecorder
-from config import load_config
+from config import AppConfig, load_config
 from context_manager import build_context_for_request, trim_history
-from hotkey_listener import PushToTalkHotkey
+from hotkey_listener import HotkeyManager
 from llm.factory import ask_with_fallback, create_provider
 from overlay_window import OverlayWindow
 from prompt_builder import build_answer_prompt
 from router import classify_complexity, configure_model_mapping
+from settings_dialog import SettingsDialog
+from settings_manager import load_settings, reload_settings, save_settings
 from speech_to_text import speech_to_text
 from utils.logger import setup_logging
 
@@ -22,12 +25,6 @@ from utils.logger import setup_logging
 def main() -> int:
     cfg = load_config()
     setup_logging(cfg.log_level)
-
-    configure_model_mapping(
-        cheap_model=cfg.cheap_model,
-        balanced_model=cfg.balanced_model,
-        premium_model=cfg.premium_model,
-    )
 
     app = QApplication(sys.argv)
 
@@ -40,23 +37,69 @@ def main() -> int:
     recorder = AudioRecorder(sample_rate=cfg.sample_rate, channels=cfg.channels)
 
     conversation_history: list[dict] = []
+    classifier_provider = None
+    summary_provider = None
+    hotkey_manager: HotkeyManager | None = None
 
-    try:
-        classifier_provider = create_provider(cfg, model=cfg.classifier_model)
-    except Exception:
-        logging.exception("Failed to initialize classifier provider")
-        classifier_provider = None
+    def rebuild_runtime_from_config(new_cfg: AppConfig) -> None:
+        nonlocal cfg, classifier_provider, summary_provider
+        cfg = new_cfg
+        configure_model_mapping(
+            cheap_model=cfg.cheap_model,
+            balanced_model=cfg.balanced_model,
+            premium_model=cfg.premium_model,
+        )
 
-    try:
-        summary_provider = create_provider(cfg, model=cfg.summary_model)
-    except Exception:
-        logging.exception("Failed to initialize summary provider")
-        summary_provider = None
+        try:
+            classifier_provider = create_provider(cfg, model=cfg.classifier_model)
+        except Exception:
+            logging.exception("Failed to initialize classifier provider")
+            classifier_provider = None
+
+        try:
+            summary_provider = create_provider(cfg, model=cfg.summary_model)
+        except Exception:
+            logging.exception("Failed to initialize summary provider")
+            summary_provider = None
+
+    rebuild_runtime_from_config(cfg)
+
+    def show_settings_dialog() -> None:
+        nonlocal hotkey_manager
+
+        if recorder.is_recording:
+            overlay.show_message("请先结束录音后再打开设置")
+            return
+
+        logging.info("Settings hotkey triggered")
+        dialog = SettingsDialog(load_settings())
+        if dialog.exec() != SettingsDialog.DialogCode.Accepted:
+            return
+
+        if dialog.saved_settings is None:
+            return
+
+        try:
+            save_settings(dialog.saved_settings)
+            latest_settings = reload_settings()
+            new_cfg = AppConfig(**{k: v for k, v in latest_settings.items() if k in AppConfig.__dataclass_fields__})
+            rebuild_runtime_from_config(new_cfg)
+            if hotkey_manager is not None:
+                hotkey_manager.reload(cfg.hotkey, cfg.settings_hotkey)
+            overlay.show_message("设置已保存并生效")
+        except Exception as exc:
+            logging.exception("Failed to apply settings")
+            overlay.show_message(f"设置保存失败: {exc}")
 
     def on_press() -> None:
+        if recorder.is_recording:
+            logging.info("Press ignored: already recording")
+            return
+
         try:
-            overlay.show_message("🎤 Recording...")
             recorder.start_recording()
+            logging.info("Recording started")
+            overlay.show_message("🎤 Recording...")
         except Exception:
             logging.exception("on_press failed")
             overlay.show_message("录音启动失败")
@@ -65,8 +108,9 @@ def main() -> int:
         nonlocal conversation_history
 
         try:
+            logging.info("STT started")
             text = speech_to_text(audio_path)
-            logging.info("STT text: %s", text)
+            logging.info("STT result: %s", text)
 
             if text.startswith("[speech_to_text error]"):
                 overlay.show_message(text)
@@ -88,9 +132,9 @@ def main() -> int:
                 complexity=complexity,
                 provider=summary_provider,
             )
-            logging.info("Context messages=%d", len(request_context))
 
             system_prompt = build_answer_prompt(text, complexity)
+            logging.info("LLM request started")
             answer, used_model, fallback_triggered = ask_with_fallback(
                 user_text=text,
                 complexity=complexity,
@@ -125,8 +169,13 @@ def main() -> int:
             overlay.show_message("处理失败，请查看日志")
 
     def on_release() -> None:
+        if not recorder.is_recording:
+            logging.info("Release ignored: recorder not running")
+            return
+
         try:
             audio_path = recorder.stop_recording()
+            logging.info("Recording stopped")
             if audio_path is None:
                 overlay.show_message("未录到音频")
                 return
@@ -137,14 +186,16 @@ def main() -> int:
             logging.exception("on_release failed")
             overlay.show_message("录音停止失败")
 
-    listener = PushToTalkHotkey(
-        hotkey=cfg.hotkey,
-        on_press=on_press,
-        on_release=on_release,
+    hotkey_manager = HotkeyManager(
+        record_hotkey=cfg.hotkey,
+        settings_hotkey=cfg.settings_hotkey,
+        on_record_press=on_press,
+        on_record_release=on_release,
+        on_settings_press=lambda: QTimer.singleShot(0, show_settings_dialog),
     )
 
     try:
-        listener.start()
+        hotkey_manager.start()
     except Exception:
         logging.exception("Hotkey listener startup failed")
         overlay.show_message("热键监听启动失败，请尝试管理员权限运行")

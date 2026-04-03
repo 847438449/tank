@@ -61,6 +61,7 @@ class AudioRecorder:
         finally:
             self._stream = None
             self._is_recording = False
+            logging.info("Recording stopped.")
 
         if not self._chunks:
             logging.warning("No audio captured.")
@@ -75,7 +76,7 @@ class AudioRecorder:
 
             audio = np.concatenate(self._chunks, axis=0)
             sf.write(tmp_path, audio, self.sample_rate, subtype="PCM_16")
-            logging.info("Recording saved to %s", tmp_path)
+            logging.info("Audio saved to %s", tmp_path)
             return tmp_path
         except Exception:
             logging.exception("Failed writing wav file.")

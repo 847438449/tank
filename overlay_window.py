@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtCore import QPoint, QPropertyAnimation, QTimer, Qt
-from PySide6.QtGui import QCursor
-from PySide6.QtWidgets import QGraphicsOpacityEffect, QLabel, QVBoxLayout, QWidget
+from PySide6.QtGui import QCursor, QKeyEvent
+from PySide6.QtWidgets import QGraphicsOpacityEffect, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 
 class OverlayWindow(QWidget):
@@ -22,6 +24,7 @@ class OverlayWindow(QWidget):
         self.offset_y = offset_y
         self.visible_ms = visible_ms
         self.fade_ms = fade_ms
+        self._is_closed_manually = False
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -44,23 +47,45 @@ class OverlayWindow(QWidget):
         self._fade_timer.setSingleShot(True)
         self._fade_timer.timeout.connect(self._start_fade)
 
-        self.label = QLabel("Ready", self)
-        self.label.setWordWrap(True)
-        self.label.setStyleSheet(
+        self.container = QWidget(self)
+        self.container.setStyleSheet(
             """
-            QLabel {
-                color: white;
+            QWidget {
                 background-color: rgba(30, 30, 30, 180);
                 border: 1px solid rgba(255,255,255,90);
                 border-radius: 10px;
-                padding: 12px;
-                font-size: 14px;
             }
+            QLabel { color: white; font-size: 14px; }
+            QPushButton {
+                color: white;
+                background: transparent;
+                border: none;
+                font-size: 16px;
+                font-weight: bold;
+                padding: 2px 6px;
+            }
+            QPushButton:hover { color: #ff8080; }
             """
         )
 
+        self.close_button = QPushButton("×", self.container)
+        self.close_button.setToolTip("关闭")
+        self.close_button.clicked.connect(self.close_overlay)
+
+        self.label = QLabel("Ready", self.container)
+        self.label.setWordWrap(True)
+
+        top_layout = QHBoxLayout()
+        top_layout.addStretch(1)
+        top_layout.addWidget(self.close_button)
+
+        body_layout = QVBoxLayout(self.container)
+        body_layout.addLayout(top_layout)
+        body_layout.addWidget(self.label)
+        body_layout.setContentsMargins(10, 6, 10, 10)
+
         layout = QVBoxLayout(self)
-        layout.addWidget(self.label)
+        layout.addWidget(self.container)
         layout.setContentsMargins(0, 0, 0, 0)
 
     def _start_fade(self) -> None:
@@ -72,6 +97,7 @@ class OverlayWindow(QWidget):
     def show_message(self, text: str) -> None:
         self._fade_timer.stop()
         self._fade_animation.stop()
+        self._is_closed_manually = False
 
         self.label.setText(text or "")
         self._opacity_effect.setOpacity(1.0)
@@ -81,15 +107,22 @@ class OverlayWindow(QWidget):
         self.move(target)
         self.show()
         self.raise_()
-
         self._fade_timer.start(self.visible_ms)
+        logging.info("Overlay shown")
 
-    def show_text_near_cursor(self, text: str, offset_x: int = 24, offset_y: int = 24) -> None:
-        self.offset_x = offset_x
-        self.offset_y = offset_y
-        self.show_message(text)
-
-    def hide_overlay(self) -> None:
+    def close_overlay(self) -> None:
+        self._is_closed_manually = True
         self._fade_timer.stop()
         self._fade_animation.stop()
         self.hide()
+        logging.info("Overlay manually closed")
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        if event.key() == Qt.Key.Key_Escape:
+            self.close_overlay()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def hide_overlay(self) -> None:
+        self.close_overlay()
