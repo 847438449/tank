@@ -7,7 +7,7 @@ import threading
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QObject, Qt, Signal, Slot
 from PySide6.QtWidgets import QApplication
 
 from audio_recorder import AudioRecorder
@@ -22,6 +22,210 @@ from settings_dialog import SettingsDialog
 from settings_manager import load_settings, reload_settings, save_settings
 from speech_to_text import speech_to_text
 from utils.logger import setup_logging
+
+
+class AppController(QObject):
+    signal_open_settings = Signal()
+    signal_show_overlay = Signal(str)
+    signal_close_overlay = Signal()
+
+    def __init__(self, cfg: AppConfig) -> None:
+        super().__init__()
+        self.cfg = cfg
+
+        self.overlay_window = OverlayWindow(
+            width=cfg.overlay_width,
+            height=cfg.overlay_height,
+            offset_x=cfg.overlay_offset_x,
+            offset_y=cfg.overlay_offset_y,
+        )
+        self.recorder = AudioRecorder(sample_rate=cfg.sample_rate, channels=cfg.channels)
+        self.hotkey_manager: HotkeyManager | None = None
+        self.settings_dialog: SettingsDialog | None = None
+
+        self.conversation_history: list[dict] = []
+        self.classifier_provider = None
+        self.summary_provider = None
+
+        self.signal_open_settings.connect(self._open_settings_dialog_impl)
+        self.signal_show_overlay.connect(self.overlay_window.show_message)
+        self.signal_close_overlay.connect(self.overlay_window.close_overlay)
+
+        self.rebuild_runtime_from_config(cfg)
+        self._init_hotkeys()
+
+    def request_show_overlay(self, text: str) -> None:
+        self.signal_show_overlay.emit(text)
+
+    def request_close_overlay(self) -> None:
+        self.signal_close_overlay.emit()
+
+    def request_open_settings(self) -> None:
+        self.signal_open_settings.emit()
+
+    def rebuild_runtime_from_config(self, new_cfg: AppConfig) -> None:
+        self.cfg = new_cfg
+        configure_model_mapping(
+            cheap_model=self.cfg.cheap_model,
+            balanced_model=self.cfg.balanced_model,
+            premium_model=self.cfg.premium_model,
+        )
+
+        try:
+            self.classifier_provider = create_provider(self.cfg, model=self.cfg.classifier_model)
+        except Exception:
+            logging.exception("Failed to initialize classifier provider")
+            self.classifier_provider = None
+
+        try:
+            self.summary_provider = create_provider(self.cfg, model=self.cfg.summary_model)
+        except Exception:
+            logging.exception("Failed to initialize summary provider")
+            self.summary_provider = None
+
+    def _init_hotkeys(self) -> None:
+        self.hotkey_manager = HotkeyManager(
+            record_hotkey=self.cfg.hotkey,
+            settings_hotkey=self.cfg.settings_hotkey,
+            on_record_press=self.on_record_press,
+            on_record_release=self.on_record_release,
+            on_settings_press=self.request_open_settings,
+        )
+        self.hotkey_manager.start()
+
+    @Slot()
+    def _open_settings_dialog_impl(self) -> None:
+        logging.info("Settings dialog requested")
+
+        if self.recorder.is_recording:
+            self.request_show_overlay("请先结束录音后再打开设置")
+            return
+
+        if self.settings_dialog is not None and self.settings_dialog.isVisible():
+            logging.info("Settings dialog already exists, activating existing window")
+            self.settings_dialog.raise_()
+            self.settings_dialog.activateWindow()
+            return
+
+        if self.settings_dialog is None:
+            self.settings_dialog = SettingsDialog(load_settings())
+            self.settings_dialog.settings_saved.connect(self._on_settings_saved)
+        else:
+            self.settings_dialog.update_settings(load_settings())
+
+        self.settings_dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        self.settings_dialog.show()
+        self.settings_dialog.raise_()
+        self.settings_dialog.activateWindow()
+        logging.info("Settings dialog shown")
+        logging.info("Settings dialog raised to front")
+
+    @Slot(dict)
+    def _on_settings_saved(self, settings: dict) -> None:
+        try:
+            save_settings(settings)
+            latest = reload_settings()
+            new_cfg = AppConfig(**{k: v for k, v in latest.items() if k in AppConfig.__dataclass_fields__})
+            self.rebuild_runtime_from_config(new_cfg)
+            if self.hotkey_manager is not None:
+                self.hotkey_manager.reload(self.cfg.hotkey, self.cfg.settings_hotkey)
+            self.request_show_overlay("设置已保存并生效")
+        except Exception as exc:
+            logging.exception("Failed to apply settings")
+            self.request_show_overlay(f"设置保存失败: {exc}")
+
+    def on_record_press(self) -> None:
+        if self.recorder.is_recording:
+            logging.info("Press ignored: already recording")
+            return
+
+        try:
+            self.recorder.start_recording()
+            logging.info("Recording started")
+            self.request_show_overlay("🎤 Recording...")
+        except Exception:
+            logging.exception("on_press failed")
+            self.request_show_overlay("录音启动失败")
+
+    def process_audio(self, audio_path: Path) -> None:
+        try:
+            logging.info("STT started")
+            text = speech_to_text(audio_path)
+            logging.info("STT result: %s", text)
+
+            if text.startswith("[speech_to_text error]"):
+                self.request_show_overlay(text)
+                return
+
+            if not text.strip():
+                self.request_show_overlay("未识别到有效文本")
+                return
+
+            if self.classifier_provider is None:
+                complexity = "medium"
+                logging.warning("Classifier provider unavailable, default medium")
+            else:
+                complexity = classify_complexity(text=text, provider=self.classifier_provider)
+            logging.info("Router complexity=%s", complexity)
+
+            request_context = build_context_for_request(
+                history=self.conversation_history,
+                complexity=complexity,
+                provider=self.summary_provider,
+            )
+
+            system_prompt = build_answer_prompt(text, complexity)
+            logging.info("LLM request started")
+            answer, used_model, fallback_triggered = ask_with_fallback(
+                user_text=text,
+                complexity=complexity,
+                config=self.cfg,
+                history=request_context,
+                system_prompt=system_prompt,
+            )
+
+            logging.info(
+                "LLM used_model=%s fallback=%s answer_len=%d",
+                used_model,
+                fallback_triggered,
+                len(answer or ""),
+            )
+
+            final_answer = (answer or "").strip() or "[llm empty reply]"
+            self.request_show_overlay(final_answer)
+
+            self.conversation_history.extend(
+                [
+                    {"role": "user", "content": text},
+                    {"role": "assistant", "content": final_answer},
+                ]
+            )
+            self.conversation_history = trim_history(
+                self.conversation_history,
+                max_turns=self.cfg.max_history_turns,
+                max_chars=self.cfg.max_history_chars,
+            )
+        except Exception:
+            logging.exception("process_audio failed")
+            self.request_show_overlay("处理失败，请查看日志")
+
+    def on_record_release(self) -> None:
+        if not self.recorder.is_recording:
+            logging.info("Release ignored: recorder not running")
+            return
+
+        try:
+            audio_path = self.recorder.stop_recording()
+            logging.info("Recording stopped")
+            if audio_path is None:
+                self.request_show_overlay("未录到音频")
+                return
+
+            self.request_show_overlay("⏳ 正在识别与请求模型...")
+            threading.Thread(target=self.process_audio, args=(audio_path,), daemon=True).start()
+        except Exception:
+            logging.exception("on_release failed")
+            self.request_show_overlay("录音停止失败")
 
 
 def parse_args() -> argparse.Namespace:
@@ -62,180 +266,9 @@ def main() -> int:
 
     app = QApplication(sys.argv)
 
-    overlay = OverlayWindow(
-        width=cfg.overlay_width,
-        height=cfg.overlay_height,
-        offset_x=cfg.overlay_offset_x,
-        offset_y=cfg.overlay_offset_y,
-    )
-    recorder = AudioRecorder(sample_rate=cfg.sample_rate, channels=cfg.channels)
-
-    conversation_history: list[dict] = []
-    classifier_provider = None
-    summary_provider = None
-    hotkey_manager: HotkeyManager | None = None
-
-    def rebuild_runtime_from_config(new_cfg: AppConfig) -> None:
-        nonlocal cfg, classifier_provider, summary_provider
-        cfg = new_cfg
-        configure_model_mapping(
-            cheap_model=cfg.cheap_model,
-            balanced_model=cfg.balanced_model,
-            premium_model=cfg.premium_model,
-        )
-
-        try:
-            classifier_provider = create_provider(cfg, model=cfg.classifier_model)
-        except Exception:
-            logging.exception("Failed to initialize classifier provider")
-            classifier_provider = None
-
-        try:
-            summary_provider = create_provider(cfg, model=cfg.summary_model)
-        except Exception:
-            logging.exception("Failed to initialize summary provider")
-            summary_provider = None
-
-    rebuild_runtime_from_config(cfg)
-
-    def show_settings_dialog() -> None:
-        nonlocal hotkey_manager
-
-        if recorder.is_recording:
-            overlay.show_message("请先结束录音后再打开设置")
-            return
-
-        logging.info("Settings hotkey triggered")
-        dialog = SettingsDialog(load_settings())
-        if dialog.exec() != SettingsDialog.DialogCode.Accepted:
-            return
-
-        if dialog.saved_settings is None:
-            return
-
-        try:
-            save_settings(dialog.saved_settings)
-            latest_settings = reload_settings()
-            new_cfg = AppConfig(**{k: v for k, v in latest_settings.items() if k in AppConfig.__dataclass_fields__})
-            rebuild_runtime_from_config(new_cfg)
-            if hotkey_manager is not None:
-                hotkey_manager.reload(cfg.hotkey, cfg.settings_hotkey)
-            overlay.show_message("设置已保存并生效")
-        except Exception as exc:
-            logging.exception("Failed to apply settings")
-            overlay.show_message(f"设置保存失败: {exc}")
-
-    def on_press() -> None:
-        if recorder.is_recording:
-            logging.info("Press ignored: already recording")
-            return
-
-        try:
-            recorder.start_recording()
-            logging.info("Recording started")
-            overlay.show_message("🎤 Recording...")
-        except Exception:
-            logging.exception("on_press failed")
-            overlay.show_message("录音启动失败")
-
-    def process_audio(audio_path: Path) -> None:
-        nonlocal conversation_history
-
-        try:
-            logging.info("STT started")
-            text = speech_to_text(audio_path)
-            logging.info("STT result: %s", text)
-
-            if text.startswith("[speech_to_text error]"):
-                overlay.show_message(text)
-                return
-
-            if not text.strip():
-                overlay.show_message("未识别到有效文本")
-                return
-
-            if classifier_provider is None:
-                complexity = "medium"
-                logging.warning("Classifier provider unavailable, default medium")
-            else:
-                complexity = classify_complexity(text=text, provider=classifier_provider)
-            logging.info("Router complexity=%s", complexity)
-
-            request_context = build_context_for_request(
-                history=conversation_history,
-                complexity=complexity,
-                provider=summary_provider,
-            )
-
-            system_prompt = build_answer_prompt(text, complexity)
-            logging.info("LLM request started")
-            answer, used_model, fallback_triggered = ask_with_fallback(
-                user_text=text,
-                complexity=complexity,
-                config=cfg,
-                history=request_context,
-                system_prompt=system_prompt,
-            )
-
-            logging.info(
-                "LLM used_model=%s fallback=%s answer_len=%d",
-                used_model,
-                fallback_triggered,
-                len(answer or ""),
-            )
-
-            final_answer = (answer or "").strip() or "[llm empty reply]"
-            overlay.show_message(final_answer)
-
-            conversation_history.extend(
-                [
-                    {"role": "user", "content": text},
-                    {"role": "assistant", "content": final_answer},
-                ]
-            )
-            conversation_history = trim_history(
-                conversation_history,
-                max_turns=cfg.max_history_turns,
-                max_chars=cfg.max_history_chars,
-            )
-        except Exception:
-            logging.exception("process_audio failed")
-            overlay.show_message("处理失败，请查看日志")
-
-    def on_release() -> None:
-        if not recorder.is_recording:
-            logging.info("Release ignored: recorder not running")
-            return
-
-        try:
-            audio_path = recorder.stop_recording()
-            logging.info("Recording stopped")
-            if audio_path is None:
-                overlay.show_message("未录到音频")
-                return
-
-            overlay.show_message("⏳ 正在识别与请求模型...")
-            threading.Thread(target=process_audio, args=(audio_path,), daemon=True).start()
-        except Exception:
-            logging.exception("on_release failed")
-            overlay.show_message("录音停止失败")
-
-    hotkey_manager = HotkeyManager(
-        record_hotkey=cfg.hotkey,
-        settings_hotkey=cfg.settings_hotkey,
-        on_record_press=on_press,
-        on_record_release=on_release,
-        on_settings_press=lambda: QTimer.singleShot(0, show_settings_dialog),
-    )
-
-    try:
-        hotkey_manager.start()
-    except Exception:
-        logging.exception("Hotkey listener startup failed")
-        overlay.show_message("热键监听启动失败，请尝试管理员权限运行")
-
+    controller = AppController(cfg)
+    controller.request_show_overlay(f"Hold [{cfg.hotkey}] to talk")
     logging.info("App started. Hold [%s] to record.", cfg.hotkey)
-    overlay.show_message(f"Hold [{cfg.hotkey}] to talk")
     return app.exec()
 
 

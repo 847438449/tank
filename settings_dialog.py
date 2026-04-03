@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -16,6 +17,8 @@ from hotkey_listener import parse_hotkey_string
 
 
 class SettingsDialog(QDialog):
+    settings_saved = Signal(dict)
+
     def __init__(self, settings: dict[str, Any], parent=None) -> None:  # noqa: ANN001
         super().__init__(parent)
         self.setWindowTitle("Settings")
@@ -62,10 +65,24 @@ class SettingsDialog(QDialog):
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self._on_save)
-        buttons.rejected.connect(self.reject)
+        buttons.rejected.connect(self.hide)
         layout.addRow(buttons)
 
-        self.saved_settings: dict[str, Any] | None = None
+    def update_settings(self, settings: dict[str, Any]) -> None:
+        self._settings = settings
+        self.hotkey_input.setText(settings.get("hotkey", "f8"))
+        self.settings_hotkey_input.setText(settings.get("settings_hotkey", "f10"))
+        self.provider_input.setText(settings.get("llm_provider", "openai"))
+        self.classifier_input.setText(settings.get("classifier_model", "gpt-4o-mini"))
+        self.summary_input.setText(settings.get("summary_model", "gpt-4o-mini"))
+        self.cheap_input.setText(settings.get("cheap_model", "gpt-4o-mini"))
+        self.balanced_input.setText(settings.get("balanced_model", "gpt-5.4-mini"))
+        self.premium_input.setText(settings.get("premium_model", "gpt-5.4"))
+        self.timeout_input.setText(str(settings.get("openai_timeout", 20.0)))
+        self.prompt_input.setPlainText(settings.get("openai_system_prompt", ""))
+        self.turns_input.setValue(int(settings.get("max_history_turns", 6)))
+        self.chars_input.setValue(int(settings.get("max_history_chars", 2200)))
+        self.log_level_input.setText(settings.get("log_level", "INFO"))
 
     def _on_save(self) -> None:
         hotkey = self.hotkey_input.text().strip().lower()
@@ -75,12 +92,8 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "冲突", "录音热键和设置热键不能相同")
             return
 
-        try:
-            parse_hotkey_string(hotkey)
-            parse_hotkey_string(settings_hotkey)
-        except Exception as exc:
-            QMessageBox.warning(self, "热键无效", str(exc))
-            return
+        parse_hotkey_string(hotkey, default="f8")
+        parse_hotkey_string(settings_hotkey, default="f10")
 
         try:
             timeout = float(self.timeout_input.text().strip())
@@ -90,7 +103,7 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "输入错误", "Timeout 必须是正数")
             return
 
-        self.saved_settings = {
+        settings = {
             **self._settings,
             "hotkey": hotkey,
             "settings_hotkey": settings_hotkey,
@@ -107,5 +120,6 @@ class SettingsDialog(QDialog):
             "log_level": self.log_level_input.text().strip() or "INFO",
         }
 
+        self.settings_saved.emit(settings)
         QMessageBox.information(self, "成功", "设置已保存")
-        self.accept()
+        self.hide()

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 
 from PySide6.QtCore import QPoint, QPropertyAnimation, QTimer, Qt, Signal, Slot
-from PySide6.QtGui import QCursor, QKeyEvent
+from PySide6.QtGui import QCursor, QGuiApplication, QKeyEvent
 from PySide6.QtWidgets import QGraphicsOpacityEffect, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 
@@ -14,7 +14,7 @@ class OverlayWindow(QWidget):
     def __init__(
         self,
         width: int = 420,
-        height: int = 120,
+        height: int = 140,
         offset_x: int = 24,
         offset_y: int = 24,
         visible_ms: int = 5000,
@@ -22,6 +22,7 @@ class OverlayWindow(QWidget):
     ) -> None:
         super().__init__()
         self.resize(width, height)
+        self.setMinimumSize(280, 96)
 
         self.offset_x = offset_x
         self.offset_y = offset_y
@@ -43,7 +44,7 @@ class OverlayWindow(QWidget):
         self._fade_animation.setDuration(self.fade_ms)
         self._fade_animation.setStartValue(1.0)
         self._fade_animation.setEndValue(0.0)
-        self._fade_animation.finished.connect(self.hide)
+        self._fade_animation.finished.connect(self._on_fade_finished)
 
         self._fade_timer = QTimer(self)
         self._fade_timer.setSingleShot(True)
@@ -53,11 +54,15 @@ class OverlayWindow(QWidget):
         self.container.setStyleSheet(
             """
             QWidget {
-                background-color: rgba(30, 30, 30, 180);
-                border: 1px solid rgba(255,255,255,90);
+                background-color: rgba(30, 30, 30, 220);
+                border: 1px solid rgba(255,255,255,140);
                 border-radius: 10px;
             }
-            QLabel { color: white; font-size: 14px; }
+            QLabel {
+                color: #FFFFFF;
+                font-size: 14px;
+                padding: 2px;
+            }
             QPushButton {
                 color: white;
                 background: transparent;
@@ -76,6 +81,7 @@ class OverlayWindow(QWidget):
 
         self.label = QLabel("Ready", self.container)
         self.label.setWordWrap(True)
+        self.label.setMinimumHeight(48)
 
         top_layout = QHBoxLayout()
         top_layout.addStretch(1)
@@ -94,11 +100,10 @@ class OverlayWindow(QWidget):
         self.signal_close_overlay.connect(self._close_overlay_impl)
 
     def show_message(self, text: str) -> None:
-        """Thread-safe public API."""
+        logging.info("Overlay requested")
         self.signal_show_message.emit(text or "")
 
     def close_overlay(self) -> None:
-        """Thread-safe public API."""
         self.signal_close_overlay.emit()
 
     @Slot()
@@ -108,21 +113,49 @@ class OverlayWindow(QWidget):
         self._fade_animation.setEndValue(0.0)
         self._fade_animation.start()
 
+    @Slot()
+    def _on_fade_finished(self) -> None:
+        self.hide()
+        logging.info("Overlay hidden by timer")
+
+    def _calc_safe_position(self) -> QPoint:
+        cursor_pos = QCursor.pos()
+        raw_x = cursor_pos.x() + self.offset_x
+        raw_y = cursor_pos.y() + self.offset_y
+
+        screen = QGuiApplication.screenAt(cursor_pos)
+        if screen is None:
+            screen = QGuiApplication.primaryScreen()
+
+        if screen is None:
+            return QPoint(raw_x, raw_y)
+
+        geo = screen.availableGeometry()
+        x = min(max(raw_x, geo.left()), geo.right() - self.width())
+        y = min(max(raw_y, geo.top()), geo.bottom() - self.height())
+
+        if (x, y) != (raw_x, raw_y):
+            logging.info("Overlay adjusted to screen bounds")
+
+        logging.info("Overlay positioned at x=%s, y=%s", x, y)
+        return QPoint(x, y)
+
     @Slot(str)
     def _show_message_impl(self, text: str) -> None:
         self._fade_timer.stop()
         self._fade_animation.stop()
 
         self.label.setText(text)
+        self.adjustSize()
+        self.resize(max(self.width(), 320), max(self.height(), 110))
         self._opacity_effect.setOpacity(1.0)
 
-        cursor_pos = QCursor.pos()
-        target = QPoint(cursor_pos.x() + self.offset_x, cursor_pos.y() + self.offset_y)
-        self.move(target)
+        self.move(self._calc_safe_position())
         self.show()
         self.raise_()
-        self._fade_timer.start(self.visible_ms)
-        logging.info("Overlay shown")
+        self.activateWindow()
+        self._fade_timer.start(max(1000, self.visible_ms))
+        logging.info("Overlay actually shown")
 
     @Slot()
     def _close_overlay_impl(self) -> None:

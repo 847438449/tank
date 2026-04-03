@@ -123,6 +123,8 @@ class PynputHotkeyListener(_BaseHotkeyListener):
             if not self._record_down:
                 self._record_down = True
                 self.on_record_press()
+            else:
+                logging.info("record hotkey repeat ignored")
             return
 
         if self._match(key, self.settings_hotkey):
@@ -130,6 +132,8 @@ class PynputHotkeyListener(_BaseHotkeyListener):
             if not self._settings_down:
                 self._settings_down = True
                 self.on_settings_press()
+            else:
+                logging.info("settings hotkey repeat ignored")
 
     def _on_release(self, key) -> None:  # noqa: ANN001
         self._events_count += 1
@@ -197,12 +201,16 @@ class KeyboardHotkeyListener(_BaseHotkeyListener):
                 if not self._record_down:
                     self._record_down = True
                     self.on_record_press()
+                else:
+                    logging.info("record hotkey repeat ignored")
                 return
             if self._match(key_name, self.settings_hotkey):
                 logging.info("settings hotkey matched on press")
                 if not self._settings_down:
                     self._settings_down = True
                     self.on_settings_press()
+                else:
+                    logging.info("settings hotkey repeat ignored")
 
         if event.event_type == "up":
             logging.info("key released: %s", key_name)
