@@ -11,7 +11,7 @@ import sys
 import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import Callable, Iterable, List, Tuple
 
 from faster_whisper import WhisperModel
 
@@ -213,39 +213,66 @@ def process_video(model: WhisperModel, video_path: Path, output_dir: Path, beam_
     write_srt(srt_path, segments)
 
 
+def run_transcription_pipeline(
+    input_dir: Path,
+    output_dir: Path,
+    model_size: str = "small",
+    device: str = "cuda",
+    compute_type: str = "float16",
+    beam_size: int = 5,
+    logger: Callable[[str], None] = print,
+    error_logger: Callable[[str], None] | None = None,
+) -> int:
+    """Run batch transcription and optionally route logs to custom callbacks."""
+    if error_logger is None:
+        error_logger = logger
+
+    ensure_ffmpeg()
+    videos = find_videos(input_dir)
+
+    if not videos:
+        logger(f"未在 {input_dir} 中找到支持的视频文件: {sorted(VIDEO_EXTENSIONS)}")
+        return 0
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    model, actual_device, actual_compute = create_model_with_fallback(
+        model_size=model_size,
+        device=device,
+        compute_type=compute_type,
+    )
+
+    logger(
+        f"模型加载完成: model={model_size}, device={actual_device}, compute_type={actual_compute}"
+    )
+    logger(f"共发现 {len(videos)} 个视频文件，开始处理...")
+
+    for idx, video in enumerate(videos, start=1):
+        logger(f"[{idx}/{len(videos)}] 处理中: {video}")
+        try:
+            process_video(model, video, output_dir, beam_size=beam_size)
+            logger(f"[{idx}/{len(videos)}] 完成: {video.name}")
+        except Exception as exc:
+            error_logger(f"[ERROR] 处理失败: {video} -> {exc}")
+
+    logger(f"处理完成，输出目录: {output_dir.resolve()}")
+    return 0
+
+
 def main() -> int:
     args = parse_args()
 
     try:
-        ensure_ffmpeg()
-        videos = find_videos(args.input_dir)
-
-        if not videos:
-            print(f"未在 {args.input_dir} 中找到支持的视频文件: {sorted(VIDEO_EXTENSIONS)}")
-            return 0
-
-        args.output_dir.mkdir(parents=True, exist_ok=True)
-
-        model, actual_device, actual_compute = create_model_with_fallback(
+        return run_transcription_pipeline(
+            input_dir=args.input_dir,
+            output_dir=args.output_dir,
             model_size=args.model_size,
             device=args.device,
             compute_type=args.compute_type,
+            beam_size=args.beam_size,
+            logger=print,
+            error_logger=lambda msg: print(msg, file=sys.stderr),
         )
-
-        print(
-            f"模型加载完成: model={args.model_size}, device={actual_device}, compute_type={actual_compute}"
-        )
-        print(f"共发现 {len(videos)} 个视频文件，开始处理...")
-
-        for idx, video in enumerate(videos, start=1):
-            print(f"[{idx}/{len(videos)}] 处理中: {video}")
-            try:
-                process_video(model, video, args.output_dir, beam_size=args.beam_size)
-            except Exception as exc:
-                print(f"[ERROR] 处理失败: {video} -> {exc}", file=sys.stderr)
-
-        print(f"处理完成，输出目录: {args.output_dir.resolve()}")
-        return 0
 
     except KeyboardInterrupt:
         print("用户中断执行。", file=sys.stderr)

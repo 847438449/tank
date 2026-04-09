@@ -91,6 +91,20 @@ python transcribe_videos.py --model-size small --device cuda --compute-type floa
 python transcribe_videos.py --model-size small --device cpu --compute-type int8
 ```
 
+### 4) 使用图形界面（Tkinter）
+
+```bash
+python gui_app.py
+```
+
+GUI 支持：
+
+- 选择输入视频目录
+- 选择输出目录
+- 下拉选择模型大小 / 设备 / 计算类型
+- 点击按钮开始转写
+- 在滚动日志框中实时查看处理输出
+
 ---
 
 ## 命令行参数说明
