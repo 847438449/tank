@@ -1,25 +1,29 @@
-# 视频批量日语转写工具（faster-whisper）
+# 日语转写工具（faster-whisper + ffmpeg + Tkinter）
 
-该项目用于扫描 `input_videos` 目录中的视频文件（`mp4/mkv/avi/mov`），自动提取音频并转写为日语文字，输出为 `txt/json/srt` 三种格式到 `output` 目录。
+本项目用于将**单个本地音频文件**或**视频 URL（优先 YouTube）**转写为日语文本，输出 `txt/json/srt` 三种文件。
+
+- 识别语言固定：`ja`
+- 默认模型：`small`
+- 默认设备：`cuda`（失败自动回退 CPU）
+- GUI 使用 `tkinter`，支持进度条与实时日志
 
 ---
 
-## 功能特性
+## 功能总览
 
-- 自动扫描视频：`input_videos` 下的所有支持格式文件（含子目录）
-- 通过 `ffmpeg` 自动提取单声道 16kHz WAV 音频
-- 使用 `faster-whisper` 执行日语语音识别（`language="ja"` 固定）
-- 每个视频输出：
-  - `*.txt`：纯文本
-  - `*.json`：结构化分段与元信息
-  - `*.srt`：字幕文件
-- 支持命令行参数：
-  - `--model-size`
-  - `--device`
-  - `--compute-type`
-- 默认优先使用 NVIDIA GPU：`--device cuda --compute-type float16`
-- CUDA/GPU 异常时自动回退到 CPU（默认回退 `int8`）
-- 兼容 Windows（路径与命令调用方式均可跨平台）
+- 两种输入模式：
+  1. Local audio file（本地音频文件）
+  2. URL（视频链接）
+- URL 模式通过 `yt-dlp` 下载媒体后转写
+- 统一后端流程复用 `transcribe_videos.py`
+- 输出文件：`*.txt`、`*.json`、`*.srt`
+- 进度条阶段（最小保障）：
+  - 10%：校验输入
+  - 25%：加载本地文件 / URL 下载阶段
+  - 45%：ffmpeg 提取/转换音频
+  - 70%：faster-whisper 识别
+  - 90%：保存输出文件
+  - 100%：完成
 
 ---
 
@@ -27,171 +31,168 @@
 
 ```text
 .
-├─ input_videos/              # 放入待转写视频
-├─ output/                    # 输出目录（程序自动创建）
-├─ transcribe_videos.py       # 主程序
+├─ gui_app.py               # Tkinter 图形界面
+├─ transcribe_videos.py     # 后端转写逻辑（CLI + GUI 共用）
 ├─ requirements.txt
 └─ README.md
 ```
 
 ---
 
-## 环境准备
-
-### 1) 安装 Python
+## 安装
 
 推荐 Python 3.10+。
 
-### 2) 安装 ffmpeg（必须）
+### 1) 安装 ffmpeg（必需）
 
-程序启动会检查 `ffmpeg` 是否在 PATH 中。如果不存在会报错并退出。
+程序会检查 `ffmpeg` 是否可用，不存在会报错。
 
-- **Windows (winget)**
+- Windows (winget):
   ```bash
   winget install Gyan.FFmpeg
   ```
-- **Windows (choco)**
+- Windows (choco):
   ```bash
   choco install ffmpeg
   ```
 
-安装后执行：
+验证：
 
 ```bash
 ffmpeg -version
 ```
 
-若能输出版本信息，说明可用。
-
-### 3) 安装依赖
+### 2) 安装 Python 依赖
 
 ```bash
 pip install -r requirements.txt
 ```
 
+依赖包括：
+- `faster-whisper`
+- `ctranslate2`
+- `yt-dlp`（URL 模式必需）
+
 ---
 
-## 使用方法
+## GUI 用法（推荐）
 
-### 1) 放入视频文件
-
-将视频文件放入 `input_videos`（支持 `mp4/mkv/avi/mov`）。
-
-### 2) 运行（默认 GPU 参数）
-
-```bash
-python transcribe_videos.py --model-size small --device cuda --compute-type float16
-```
-
-> 默认模型建议从 `small` 开始，兼顾速度与效果。
-
-### 3) CPU 运行（手动切换）
-
-```bash
-python transcribe_videos.py --model-size small --device cpu --compute-type int8
-```
-
-### 4) 使用图形界面（Tkinter）
+启动：
 
 ```bash
 python gui_app.py
 ```
 
-GUI 支持：
+### 输入模式
 
-- 选择输入视频目录
+1. **Local audio file**
+   - 选择单个本地音频文件（`*.mp3, *.wav, *.m4a, *.flac, *.aac, *.ogg`）
+2. **URL**
+   - 输入视频 URL（YouTube 优先）
+   - 程序会先下载媒体，再执行转写
+
+### 其他设置
+
 - 选择输出目录
-- 下拉选择模型大小 / 设备 / 计算类型
-- 点击按钮开始转写
-- 在滚动日志框中实时查看处理输出
+- 选择 `model size` / `device` / `compute type`
+- 点击“开始转写”
+- 在日志框查看详细步骤
+- 进度条显示当前阶段
 
 ---
 
-## 命令行参数说明
+## CLI 用法
 
-- `--input-dir`：输入视频目录，默认 `input_videos`
-- `--output-dir`：输出目录，默认 `output`
-- `--model-size`：Whisper 模型大小，默认 `small`
-- `--device`：`cuda` 或 `cpu`，默认 `cuda`
-- `--compute-type`：默认 `float16`（GPU 常用），CPU 可用 `int8`/`float32`
-- `--beam-size`：解码 beam size，默认 `5`
-
-示例：
+### 本地文件模式
 
 ```bash
-python transcribe_videos.py --model-size medium --device cuda --compute-type float16 --beam-size 5
+python transcribe_videos.py \
+  --mode local \
+  --input-file "C:/path/to/audio.m4a" \
+  --output-dir "C:/path/to/output" \
+  --model-size small \
+  --device cuda \
+  --compute-type float16
+```
+
+### URL 模式
+
+```bash
+python transcribe_videos.py \
+  --mode url \
+  --url "https://www.youtube.com/watch?v=xxxx" \
+  --output-dir "C:/path/to/output" \
+  --model-size small \
+  --device cuda \
+  --compute-type float16
 ```
 
 ---
 
-## 输出文件格式
+## 输出说明
 
-假设输入视频为 `input_videos/demo.mp4`，则在 `output` 下会生成：
+假设输入文件名（或下载媒体名）是 `sample_audio`，输出目录下会生成：
 
-- `demo.txt`：整段文本（按识别分段换行）
-- `demo.json`：包含每段 `start/end/text`、识别语言信息等
-- `demo.srt`：标准字幕格式（可直接用于播放器）
+- `sample_audio.txt`
+- `sample_audio.json`
+- `sample_audio.srt`
+
+JSON 内包含：
+- `source_media`
+- `language`（固定 `ja`）
+- `model_info`
+- 分段 `segments`
 
 ---
 
-## GPU 使用说明（NVIDIA）
+## GPU / CPU 说明
 
-推荐命令：
+默认参数：
+
+- `--device cuda`
+- `--compute-type float16`
+
+当 CUDA 初始化失败时，后端会自动回退到 CPU（`int8`）。
+
+手动强制 CPU：
 
 ```bash
-python transcribe_videos.py --device cuda --compute-type float16
-```
-
-程序会先尝试按你指定的 CUDA 参数加载模型。若失败，将自动回退到 CPU，并在终端输出警告。
-
-常见场景：
-
-- 机器无 NVIDIA GPU
-- CUDA 驱动或运行时不匹配
-- PyTorch/CT2 相关依赖未正确安装
-
-若你希望稳定执行（忽略 GPU），可直接使用 CPU 参数：
-
-```bash
-python transcribe_videos.py --device cpu --compute-type int8
+python transcribe_videos.py --mode local --input-file "a.wav" --output-dir output --device cpu --compute-type int8
 ```
 
 ---
 
-## 常见报错与排查
+## 常见报错排查
 
-### 1) `未找到 ffmpeg`
+### 1) 未找到 ffmpeg
 
-原因：`ffmpeg` 未安装或未加入 PATH。
+- 确认已安装并加入 PATH
+- 重新打开终端后执行 `ffmpeg -version`
 
-排查：
+### 2) URL 模式提示 yt-dlp 缺失
 
-1. 执行 `ffmpeg -version` 检查是否可调用
-2. Windows 下确认 `ffmpeg.exe` 所在目录已加入系统环境变量 PATH
-3. 重新打开终端再执行
+- 安装：`pip install yt-dlp`
+- 验证：`yt-dlp --version`
 
-### 2) CUDA 初始化失败 / 无法使用 GPU
+### 3) 无效 URL / 下载失败
 
-现象：程序提示 `[WARN] CUDA 模式初始化失败，将自动回退到 CPU`。
+- 检查 URL 是否完整（`http/https`）
+- 检查网络环境
+- 手动运行 `yt-dlp <url>` 查看详细错误
 
-排查建议：
+### 4) 本地文件格式不支持
 
-1. 使用 `nvidia-smi` 检查驱动与 GPU 是否正常
-2. 检查 CUDA 与相关依赖版本匹配
-3. 先用 `--device cpu --compute-type int8` 验证程序流程无误
+- GUI 本地模式仅支持：`mp3/wav/m4a/flac/aac/ogg`
 
-### 3) ffmpeg 抽取音频失败
+### 5) CUDA 无法使用
 
-可能原因：视频损坏、编码异常、路径权限问题。
-
-排查：
-
-1. 手动执行 ffmpeg 命令测试该视频
-2. 检查文件名是否包含特殊字符导致路径问题
-3. 检查磁盘空间和写入权限
+- 检查 `nvidia-smi`
+- 检查驱动和依赖匹配
+- 临时改用 `--device cpu --compute-type int8`
 
 ---
 
-## 许可与说明
+## 兼容性
 
-本项目示例用于本地批量转写流程演示，你可按需继续扩展（例如并行处理、日志系统、说话人分离等）。
+- 代码按跨平台方式编写，兼容 Windows 路径与命令调用。
+- 输出文件名做了 Windows 保留字符清理。
