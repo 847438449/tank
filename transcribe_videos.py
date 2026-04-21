@@ -180,7 +180,14 @@ def convert_media_to_wav(media_path: Path, wav_path: Path) -> None:
         "pcm_s16le",
         str(wav_path),
     ]
-    completed = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    completed = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
     if completed.returncode != 0:
         raise RuntimeError(
             f"ffmpeg 转换音频失败: {media_path.name}\n"
@@ -215,7 +222,14 @@ def download_video_from_url(
     ]
 
     logger("开始下载媒体（yt-dlp）...")
-    completed = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    completed = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
     if completed.returncode != 0:
         raise RuntimeError(
             "yt-dlp 下载失败。\n"
